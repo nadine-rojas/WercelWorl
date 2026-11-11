@@ -1,104 +1,119 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import Peer, { type DataConnection } from 'peerjs';
+import { Peer, DataConnection } from 'peerjs';
 import {
   BT,
   BD,
+  CHUNK_SIZE,
   WH,
   SEA,
+  SPAWN_X,
+  SPAWN_Z,
   HOTBAR_SIZE,
-  BACKPACK_SIZE,
   TOTAL_INV_SLOTS,
   MAX_ENDERMEN,
   ENDERMAN_SPAWN_CHANCE,
   MAX_ZOMBIES,
   MAX_SPIDERS,
-  SPAWN_X,
-  SPAWN_Z,
-  VX,
-  VZ,
-  VILLAGE_SIZE,
-  LOST_VILLAGER_ISLANDS,
-  TOTAL_VILLAGERS_TO_RESCUE,
+  CLOTHES_PALETTE,
+  SAVE_STORAGE_KEY,
   createInfiniteWorld,
   ensureChunksAroundPlayer,
   gB,
   sB,
+  getH,
   surfY,
+  isSolid,
+  getSpawnY,
   createPlayer,
-  nearestPlayer,
+  cyclePlayerClothesLogic,
   stepPlayerPhysics,
-  raycastBlock,
   breakBlockLogic,
   placeBlockLogic,
-  craftWoodToPlanksLogic,
-  craftPlanksToDoorLogic,
-  craftPlanksToBoatLogic,
-  placeBoatInWaterLogic,
-  mountBoatLogic,
-  dismountBoatLogic,
-  interactVillagerRescueLogic,
-  countItemInInventory,
-  swapInventorySlots,
-  hasLineOfSight,
+  toggleTwoBlockDoorLogic,
+  damageEntityLogic,
+  tameWolfLogic,
+  stepEnemyCombatLogic,
   stepEntityMovementWithCollision,
   despawnDaytimeMonsters,
   isNightTime,
   getDayPhaseLabel,
-  getDistanceToVillage,
-  getCompassDirectionToVillage,
+  raycastBlock,
+  distance3D,
+  nearestPlayer,
+  addItemToInventory,
+  countItemInInventory,
+  swapInventorySlots,
+  craftWoodToPlanksLogic,
+  craftPlanksToTableLogic,
+  craftPlanksToSticksLogic,
+  craftWoodPickaxeLogic,
+  craftStonePickaxeLogic,
+  craftPlanksToBoatLogic,
+  craftWoolAndPlanksToBedLogic,
+  craftPlanksToDoorLogic,
+  placeBoatInWaterLogic,
+  mountBoatLogic,
+  dismountBoatLogic,
+  toggleMountHorseLogic,
+  findValidMonsterSpawnPoint,
+  isPlayerMovingInput,
+  serializeSaveGame,
+  deserializeSaveGame,
   generateRoomCode,
   normalizeRoomCode,
-  type InfiniteWorld,
-  type PlayerState,
   type EntityData,
-  type InventorySlot,
+  type PlayerState,
   type BoatData,
 } from './game/voxelWorldLogic';
-import { soundEngine } from './game/soundEngine';
-import { STANDALONE_HTML_CODE } from './game/standaloneHtmlTemplate';
 
-interface ThreeEntity extends EntityData {
+interface MeshEntity extends EntityData {
   mesh: THREE.Group;
-  dir: number;
-  tmr: number;
-  spd: number;
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
   legs: THREE.Mesh[];
-  atkCd: number;
-  tpCd?: number;
-  angry?: boolean;
-  owner?: PlayerState | null;
-  collar?: THREE.Mesh;
-  eyeMat?: THREE.MeshBasicMaterial;
-  tail?: THREE.Mesh;
-  home?: { x: number; z: number };
-  beacon?: THREE.Mesh;
+  arms?: THREE.Mesh[];
+  eyes?: THREE.Mesh[];
 }
 
-interface ThreeBoat extends BoatData {
-  mesh: THREE.Group;
-  passengerMesh: THREE.Group;
+interface FloatingParticle {
+  mesh: THREE.Mesh;
+  vel: THREE.Vector3;
+  life: number;
+  maxLife: number;
 }
 
-interface RemotePeerState {
+interface RemotePlayerVisual {
   peerId: string;
-  mesh: THREE.Group;
+  group: THREE.Group;
   head: THREE.Mesh;
+  torso: THREE.Mesh;
   legs: THREE.Mesh[];
-  boatMesh: THREE.Group;
+  arms: THREE.Mesh[];
   targetPos: THREE.Vector3;
-  yaw: number;
-  pitch: number;
+  targetYaw: number;
+  targetPitch: number;
+  heldBlock: number;
   inBoat: boolean;
+  mountedHorse: boolean;
+  clothesIdx: number;
+  walkPhase: number;
   lastSeen: number;
 }
 
-type NetMessage =
+interface FloatingChatBubble {
+  id: string;
+  peerId: string;
+  senderLabel: string;
+  text: string;
+  expiresAt: number;
+  screenX: number;
+  screenY: number;
+  visible: boolean;
+  isLocal: boolean;
+}
+
+type NetworkMessage =
   | {
       type: 'player:move';
       peerId: string;
@@ -107,719 +122,1257 @@ type NetMessage =
       z: number;
       yaw: number;
       pitch: number;
+      heldBlock: number;
       inBoat: boolean;
+      mountedHorse: boolean;
+      clothesIdx: number;
+      walkPhase: number;
     }
   | {
       type: 'block:set';
       x: number;
       y: number;
       z: number;
-      t: number;
+      blockType: number;
     }
   | {
-      type: 'villager:rescued';
-      villagerId: number;
-      rescuedCount: number;
+      type: 'door:toggle';
+      x: number;
+      y: number;
+      z: number;
     }
   | {
-      type: 'init:state';
-      modifiedBlocks: Array<[string, number]>;
-      rescuedVillagerIds: number[];
-      rescuedCount: number;
+      type: 'pvp:hit';
+      targetPeerId: string;
+      attackerPeerId: string;
+      damage: number;
+    }
+  | {
+      type: 'chat:msg';
+      peerId: string;
+      senderLabel: string;
+      text: string;
+    }
+  | {
+      type: 'clothes:change';
+      peerId: string;
+      clothesIdx: number;
+    }
+  | {
+      type: 'challenge:state';
+      state: 'off' | 'green' | 'red';
+    }
+  | {
+      type: 'world:sync';
+      modifications: Array<[string, number]>;
+      dayTime: number;
+      challengeState: 'off' | 'green' | 'red';
     };
 
-interface ParticleData {
-  mesh: THREE.Mesh;
-  vel: THREE.Vector3;
-  life: number;
+const PEER_PREFIX = 'VOXELWORLD-SURVIVAL-2026-';
+
+// Helper para guardar también en IndexedDB además de localStorage
+function saveToIndexedDB(key: string, jsonPayload: string): void {
+  try {
+    if (typeof indexedDB === 'undefined') return;
+    const req = indexedDB.open('VoxelWorldDB', 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('saves')) {
+        db.createObjectStore('saves');
+      }
+    };
+    req.onsuccess = () => {
+      const db = req.result;
+      const tx = db.transaction('saves', 'readwrite');
+      tx.objectStore('saves').put(jsonPayload, key);
+    };
+  } catch {
+    // IndexedDB fallback silencioso
+  }
 }
 
-const PH = 1.75;
-const PEER_PREFIX = 'voxelworld-room-';
+export function App() {
+  const mountRef = useRef<HTMLDivElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [hasStartedOnce, setHasStartedOnce] = useState(false);
+  const [isInventoryOpen, setIsInventoryOpen] = useState(false);
+  const [isCraftingTableOpen, setIsCraftingTableOpen] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatInputText, setChatInputText] = useState('');
+  const [selectedSwapSlot, setSelectedSwapSlot] = useState<number | null>(null);
 
-export default function App() {
-  const mountRef = useRef<HTMLDivElement>(null);
+  // Estado PWA ("Instalar Juego")
+  const [pwaInstallBannerMsg, setPwaInstallBannerMsg] = useState<string | null>(null);
+  const deferredInstallPromptRef = useRef<any>(null);
 
-  const [gameState, setGameState] = useState<'title' | 'playing' | 'paused' | 'gameover'>('title');
-  const [pointerLocked, setPointerLocked] = useState(false);
-  const [hp, setHp] = useState(20);
-  const [selectedSlot, setSelectedSlot] = useState(0);
-  const [inventory, setInventory] = useState<(InventorySlot | null)[]>(() =>
-    Array.from({ length: TOTAL_INV_SLOTS }, () => null)
-  );
-  const [inventoryOpen, setInventoryOpen] = useState(false);
-  const [swapSourceIdx, setSwapSourceIdx] = useState<number | null>(null);
-  const [coords, setCoords] = useState({ x: 0, y: 12, z: 0 });
-  const [villageDist, setVillageDist] = useState(209);
-  const [villageDir, setVillageDir] = useState('SE');
-  const [villageDiscovered, setVillageDiscovered] = useState(false);
-  const [villagersRescued, setVillagersRescued] = useState(0);
-  const [nearestLostVillagerDist, setNearestLostVillagerDist] = useState<number | null>(45);
-  const [nearestLostVillagerDir, setNearestLostVillagerDir] = useState<string>('SE');
-  const [inBoatUI, setInBoatUI] = useState(false);
-  const [hasBoatPassengerUI, setHasBoatPassengerUI] = useState(false);
-  const [dayPhase, setDayPhase] = useState('☀️ Día');
-  const [isNightUI, setIsNightUI] = useState(false);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const [showCodeModal, setShowCodeModal] = useState(false);
-  const [copiedCode, setCopiedCode] = useState(false);
-  const [soundMuted, setSoundMuted] = useState(false);
-  const [blocksCollectedCount, setBlocksCollectedCount] = useState(0);
-
-  // Multiplayer (PeerJS) State
-  const [roomMode, setRoomMode] = useState<'none' | 'created' | 'join-input' | 'connected'>('none');
+  // Estado Multijugador PeerJS
   const [roomCode, setRoomCode] = useState<string>('');
   const [joinCodeInput, setJoinCodeInput] = useState<string>('');
-  const [netStatus, setNetStatus] = useState<string>('Desconectado');
-  const [connectedPeersCount, setConnectedPeersCount] = useState<number>(0);
-  const [copiedRoomCode, setCopiedRoomCode] = useState(false);
+  const [showJoinModal, setShowJoinModal] = useState<boolean>(false);
+  const [mpStatus, setMpStatus] = useState<'offline' | 'connecting' | 'hosting' | 'connected'>('offline');
+  const [mpError, setMpError] = useState<string | null>(null);
+  const [peerCount, setPeerCount] = useState<number>(1);
+  const [isHost, setIsHost] = useState<boolean>(true);
+  const [isTouchDevice, setIsTouchDevice] = useState<boolean>(false);
 
-  // Mobile / Touch Controls State
-  const [isTouchDevice, setIsTouchDevice] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return (
-      'ontouchstart' in window ||
-      navigator.maxTouchPoints > 0 ||
-      window.matchMedia('(pointer: coarse)').matches
-    );
+  // Estado Desafío "Luz Roja, Luz Verde"
+  const [challengeState, setChallengeState] = useState<'off' | 'green' | 'red'>('off');
+  const challengeStateRef = useRef<'off' | 'green' | 'red'>('off');
+
+  // Chat flotante sobre cabezas
+  const [floatingChats, setFloatingChats] = useState<FloatingChatBubble[]>([]);
+  const floatingChatsRef = useRef<FloatingChatBubble[]>([]);
+
+  // Wolf naming modal state
+  const [wolfModal, setWolfModal] = useState<{ open: boolean; wolfId: number | null }>({
+    open: false,
+    wolfId: null,
   });
-  const [joyKnob, setJoyKnob] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const joyVecRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const joyTouchIdRef = useRef<number | null>(null);
-  const lookTouchRef = useRef<{ id: number; lastX: number; lastY: number } | null>(null);
+  const [wolfNameInput, setWolfNameInput] = useState('Fenrir');
 
-  const gameStateRef = useRef(gameState);
-  gameStateRef.current = gameState;
+  // Trigger de refresco reactivo para inventario/mesas
+  const [, setUiTick] = useState(0);
+  const [hasSavedGame, setHasSavedGame] = useState<boolean>(() => {
+    try {
+      return !!localStorage.getItem(SAVE_STORAGE_KEY);
+    } catch {
+      return false;
+    }
+  });
 
-  const inventoryOpenRef = useRef(inventoryOpen);
-  inventoryOpenRef.current = inventoryOpen;
-
-  const showCodeModalRef = useRef(showCodeModal);
-  showCodeModalRef.current = showCodeModal;
-
-  const isTouchDeviceRef = useRef(isTouchDevice);
-  isTouchDeviceRef.current = isTouchDevice;
-
+  // Referencias para acceso desde callbacks de UI y red
   const actionsRef = useRef<{
-    requestPointerLock: () => void;
-    respawnPlayer: () => void;
-    selectHotbarSlot: (idx: number) => void;
+    confirmWolfName: (name: string) => void;
+    cancelWolfName: () => void;
     craftPlanks: () => void;
-    craftDoor: () => void;
+    craftTable: () => void;
+    craftSticks: () => void;
+    craftWoodPickaxe: () => void;
+    craftStonePickaxe: () => void;
     craftBoat: () => void;
-    useOrMountBoat: () => void;
-    rescueInteract: () => void;
-    swapSlots: (idxA: number, idxB: number) => void;
-    toggleTimeOfDay: () => void;
-    createMultiplayerRoom: () => string;
-    joinMultiplayerRoom: (codeToJoin: string) => void;
-    triggerAttackOrBreak: () => void;
-    triggerPlaceOrInteract: () => void;
-    triggerJump: () => void;
-    rotateCameraBy: (dYaw: number, dPitch: number) => void;
+    craftBed: () => void;
+    craftDoor: () => void;
+    changeClothes: () => void;
+    saveGame: () => void;
+    toggleRedGreenChallenge: () => void;
+    sendChatMessage: (text: string) => void;
+    handleSlotClick: (slotIdx: number) => void;
+    selectHotbarSlot: (slotIdx: number) => void;
+    createRoom: () => void;
+    joinRoom: (code: string) => void;
+    touchActionBreak: () => void;
+    touchActionPlace: () => void;
+    touchJumpStart: () => void;
+    touchJumpEnd: () => void;
+    toggleInventoryModal: () => void;
+    toggleCraftingTableModal: () => void;
   } | null>(null);
 
-  // Sync dataset attributes on body for automated verification
+  const plRef = useRef<PlayerState | null>(null);
+  const joyVecRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [joyKnob, setJoyKnob] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const joyTouchIdRef = useRef<number | null>(null);
+  const joyOriginRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  const lookTouchRef = useRef<{ id: number; lastX: number; lastY: number } | null>(null);
+  const camAnglesRef = useRef<{ yaw: number; pitch: number }>({ yaw: 0.75, pitch: -0.1 });
+
+  // Requisito 3: Registro dinámico de Service Worker y manifest.json mediante Data URIs para PWA
   useEffect(() => {
-    document.body.dataset.state = gameState;
-    document.body.dataset.pointerLocked = String(pointerLocked);
-    document.body.dataset.night = String(isNightUI);
-    document.body.dataset.inBoat = String(inBoatUI);
-    document.body.dataset.rescued = String(villagersRescued);
-    document.body.dataset.roomCode = roomCode;
-  }, [gameState, pointerLocked, isNightUI, inBoatUI, villagersRescued, roomCode]);
+    try {
+      const makeIconDataUrl = (size: number) => {
+        const c = document.createElement('canvas');
+        c.width = size;
+        c.height = size;
+        const ctx = c.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#090d16';
+          ctx.fillRect(0, 0, size, size);
+          // Bloque voxel estilizado esmeralda/tierra
+          const pad = Math.floor(size * 0.14);
+          const w = size - pad * 2;
+          ctx.fillStyle = '#10b981';
+          ctx.fillRect(pad, pad, w, Math.floor(w * 0.35));
+          ctx.fillStyle = '#8b5a2b';
+          ctx.fillRect(pad, pad + Math.floor(w * 0.35), w, Math.floor(w * 0.65));
+          ctx.strokeStyle = '#34d399';
+          ctx.lineWidth = Math.max(4, Math.floor(size * 0.03));
+          ctx.strokeRect(pad, pad, w, w);
+        }
+        return c.toDataURL('image/png');
+      };
+
+      const icon192 = makeIconDataUrl(192);
+      const icon512 = makeIconDataUrl(512);
+
+      const dynamicManifest = {
+        name: 'VoxelWorld — Supervivencia & Desafíos Multijugador',
+        short_name: 'VoxelWorld',
+        description:
+          'Sandbox 3D de supervivencia pura, PvP, desafíos Luz Roja Luz Verde y multijugador P2P.',
+        start_url: window.location.origin + '/',
+        display: 'standalone',
+        orientation: 'landscape',
+        background_color: '#090d16',
+        theme_color: '#10b981',
+        icons: [
+          { src: icon192, sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+          { src: icon512, sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+        ],
+      };
+
+      const manifestDataUri =
+        'data:application/manifest+json;charset=utf-8,' +
+        encodeURIComponent(JSON.stringify(dynamicManifest));
+
+      let linkEl = document.querySelector('link[rel="manifest"]') as HTMLLinkElement | null;
+      if (!linkEl) {
+        linkEl = document.createElement('link');
+        linkEl.rel = 'manifest';
+        document.head.appendChild(linkEl);
+      }
+      linkEl.href = manifestDataUri;
+
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(() => {
+          // Fallback con Data/Blob URI si el entorno restringe archivo estático
+          const swCode = `
+            self.addEventListener('install', (e) => self.skipWaiting());
+            self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+            self.addEventListener('fetch', (e) => {});
+          `;
+          const blob = new Blob([swCode], { type: 'application/javascript' });
+          navigator.serviceWorker.register(URL.createObjectURL(blob)).catch(() => {});
+        });
+      }
+    } catch {
+      // Ignorar errores en contextos restringidos
+    }
+
+    const onBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      deferredInstallPromptRef.current = e;
+    };
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+  }, []);
+
+  const handleInstallPWAClick = async () => {
+    if (deferredInstallPromptRef.current) {
+      try {
+        deferredInstallPromptRef.current.prompt();
+        await deferredInstallPromptRef.current.userChoice;
+        deferredInstallPromptRef.current = null;
+        setPwaInstallBannerMsg('✅ ¡Instalación de VoxelWorld iniciada!');
+      } catch {
+        setPwaInstallBannerMsg('✅ PWA lista: usa el icono "Instalar aplicación" en la barra de tu navegador.');
+      }
+    } else {
+      setPwaInstallBannerMsg(
+        '📲 PWA Activada (Manifest + Service Worker registrados). En Chrome/Edge/Móvil selecciona "Instalar aplicación" o "Añadir a pantalla de inicio".'
+      );
+    }
+    setTimeout(() => setPwaInstallBannerMsg(null), 5000);
+  };
 
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
 
-    let toastTimer: number | null = null;
-    const showToast = (txt: string, dur = 3200) => {
-      setToastMsg(txt);
-      if (toastTimer) window.clearTimeout(toastTimer);
-      toastTimer = window.setTimeout(() => setToastMsg(null), dur);
+    const touchDetected =
+      'ontouchstart' in window ||
+      navigator.maxTouchPoints > 0 ||
+      window.matchMedia('(pointer: coarse)').matches;
+    setIsTouchDevice(touchDetected);
+
+    // ─── WEB AUDIO SYNTHESIZER (CERO ASSETS EXTERNOS) ─────────────────
+    let audioCtx: AudioContext | null = null;
+    const ensureAudio = () => {
+      if (!audioCtx) {
+        const Ctx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        if (Ctx) audioCtx = new Ctx();
+      }
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
     };
 
-    const syncInventoryUI = (pl: PlayerState) => {
-      setInventory(pl.inventory.map((s) => (s ? { ...s } : null)));
-      setSelectedSlot(pl.si);
-      const totalItems = pl.inventory.reduce((sum, s) => sum + (s ? s.count : 0), 0);
-      setBlocksCollectedCount(totalItems);
-      setInBoatUI(pl.inBoat);
-      setHasBoatPassengerUI(pl.boatPassengerId !== null);
-      setVillagersRescued(pl.villagersRescued);
+    const playSfx = (
+      kind:
+        | 'step'
+        | 'jump'
+        | 'land'
+        | 'break'
+        | 'place'
+        | 'hit'
+        | 'hurt'
+        | 'tame'
+        | 'craft'
+        | 'door'
+        | 'horse'
+        | 'redlight'
+        | 'greenlight'
+    ) => {
+      if (!audioCtx) return;
+      try {
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        if (kind === 'step') {
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(95 + Math.random() * 25, now);
+          osc.frequency.exponentialRampToValueAtTime(45, now + 0.055);
+          gain.gain.setValueAtTime(0.05, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+          osc.start(now);
+          osc.stop(now + 0.06);
+        } else if (kind === 'jump') {
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(190, now);
+          osc.frequency.exponentialRampToValueAtTime(390, now + 0.12);
+          gain.gain.setValueAtTime(0.09, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
+          osc.start(now);
+          osc.stop(now + 0.13);
+        } else if (kind === 'land') {
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(120, now);
+          osc.frequency.exponentialRampToValueAtTime(42, now + 0.08);
+          gain.gain.setValueAtTime(0.08, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+          osc.start(now);
+          osc.stop(now + 0.09);
+        } else if (kind === 'break') {
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(220, now);
+          osc.frequency.exponentialRampToValueAtTime(68, now + 0.11);
+          gain.gain.setValueAtTime(0.11, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+          osc.start(now);
+          osc.stop(now + 0.12);
+        } else if (kind === 'place' || kind === 'door') {
+          osc.type = 'square';
+          osc.frequency.setValueAtTime(kind === 'door' ? 210 : 280, now);
+          osc.frequency.exponentialRampToValueAtTime(420, now + 0.07);
+          gain.gain.setValueAtTime(0.08, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+          osc.start(now);
+          osc.stop(now + 0.08);
+        } else if (kind === 'hit') {
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(160, now);
+          osc.frequency.exponentialRampToValueAtTime(55, now + 0.14);
+          gain.gain.setValueAtTime(0.14, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+          osc.start(now);
+          osc.stop(now + 0.15);
+        } else if (kind === 'hurt' || kind === 'redlight') {
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(135, now);
+          osc.frequency.linearRampToValueAtTime(60, now + 0.22);
+          gain.gain.setValueAtTime(0.16, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+          osc.start(now);
+          osc.stop(now + 0.24);
+        } else if (kind === 'tame' || kind === 'craft' || kind === 'horse' || kind === 'greenlight') {
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(360, now);
+          osc.frequency.setValueAtTime(540, now + 0.07);
+          osc.frequency.setValueAtTime(720, now + 0.14);
+          gain.gain.setValueAtTime(0.12, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+          osc.start(now);
+          osc.stop(now + 0.28);
+        }
+      } catch {
+        // Ignore audio context restrictions
+      }
     };
 
-    // 1. RENDERER & SCENE (Full Screen)
+    // ─── RENDERER & SCENE ─────────────────────────────────────────────
     const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
     renderer.setSize(window.innerWidth, window.innerHeight);
-
-    const gl = renderer.getContext();
-    const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
-    const rendererStr = debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) || '' : '';
-    const isSoftwareGl = /SwiftShader|llvmpipe|Software|Basic Render/i.test(rendererStr);
-
-    renderer.shadowMap.enabled = !isSoftwareGl;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
+    renderer.shadowMap.enabled = false;
+    renderer.domElement.className = 'block w-full h-full cursor-crosshair select-none';
     container.innerHTML = '';
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x7ec8e3);
-    scene.fog = new THREE.Fog(0x7ec8e3, 35, 92);
+    scene.fog = new THREE.FogExp2(0x87ceeb, 0.011);
 
-    const cam1 = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 140);
+    const cam1 = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 145);
 
-    // 2. LIGHTING & CELESTIAL BODIES (Sun, Moon, Stars)
-    const ambLight = new THREE.AmbientLight(0xffffff, 0.55);
-    scene.add(ambLight);
+    const ambL = new THREE.AmbientLight(0xffffff, 0.65);
+    scene.add(ambL);
+    const sunL = new THREE.DirectionalLight(0xfff5e0, 0.95);
+    sunL.position.set(60, 100, 40);
+    scene.add(sunL);
 
-    const sunLight = new THREE.DirectionalLight(0xfff5e0, 0.9);
-    sunLight.position.set(50, 90, 40);
-    if (!isSoftwareGl) {
-      sunLight.castShadow = true;
-      sunLight.shadow.mapSize.set(1024, 1024);
-      sunLight.shadow.camera.near = 1;
-      sunLight.shadow.camera.far = 160;
-      sunLight.shadow.camera.left = -60;
-      sunLight.shadow.camera.right = 60;
-      sunLight.shadow.camera.top = 60;
-      sunLight.shadow.camera.bottom = -60;
-    }
-    scene.add(sunLight);
-
-    const hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x4a7c3f, 0.3);
-    scene.add(hemiLight);
-
-    const skyGroup = new THREE.Group();
-    scene.add(skyGroup);
+    const skyGeo = new THREE.SphereGeometry(135, 16, 12);
+    const skyMat = new THREE.MeshBasicMaterial({ color: 0x87ceeb, side: THREE.BackSide });
+    const skyMesh = new THREE.Mesh(skyGeo, skyMat);
+    scene.add(skyMesh);
 
     const sunMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(7, 7, 7),
-      new THREE.MeshBasicMaterial({ color: 0xffe066 })
+      new THREE.SphereGeometry(4.5, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffee44 })
     );
-    skyGroup.add(sunMesh);
+    scene.add(sunMesh);
 
-    const moonGroup = new THREE.Group();
-    const moonCore = new THREE.Mesh(
-      new THREE.BoxGeometry(6, 6, 6),
-      new THREE.MeshBasicMaterial({ color: 0xe2e8f0 })
+    const moonMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(3.5, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xddeeff })
     );
-    const moonGlow = new THREE.Mesh(
-      new THREE.BoxGeometry(7.2, 7.2, 7.2),
-      new THREE.MeshBasicMaterial({ color: 0x93c5fd, transparent: true, opacity: 0.25 })
-    );
-    const craterMat = new THREE.MeshBasicMaterial({ color: 0x94a3b8 });
-    const crater1 = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.4, 0.2), craterMat);
-    crater1.position.set(-1.2, 1.1, 3.05);
-    const crater2 = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.2, 0.2), craterMat);
-    crater2.position.set(1.3, -1.0, 3.05);
-    moonGroup.add(moonCore, moonGlow, crater1, crater2);
-    skyGroup.add(moonGroup);
+    scene.add(moonMesh);
 
-    const starCount = 360;
-    const starPositions = new Float32Array(starCount * 3);
-    for (let i = 0; i < starCount; i++) {
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.random() * Math.PI * 0.46 + 0.06;
-      const r = 95;
-      starPositions[i * 3] = r * Math.cos(phi) * Math.cos(theta);
-      starPositions[i * 3 + 1] = r * Math.sin(phi);
-      starPositions[i * 3 + 2] = r * Math.cos(phi) * Math.sin(theta);
+    const stPos: number[] = [];
+    for (let i = 0; i < 300; i++) {
+      const th = Math.random() * Math.PI * 2;
+      const ph = Math.acos(2 * Math.random() - 1);
+      stPos.push(
+        125 * Math.sin(ph) * Math.cos(th),
+        125 * Math.sin(ph) * Math.sin(th),
+        125 * Math.cos(ph)
+      );
     }
-    const starGeo = new THREE.BufferGeometry();
-    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
-    const starMat = new THREE.PointsMaterial({
-      color: 0xf8fafc,
-      size: 1.6,
+    const stGeo = new THREE.BufferGeometry();
+    stGeo.setAttribute('position', new THREE.Float32BufferAttribute(stPos, 3));
+    const stMat = new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 0.7,
       transparent: true,
       opacity: 0,
     });
-    const starField = new THREE.Points(starGeo, starMat);
-    skyGroup.add(starField);
+    const stars = new THREE.Points(stGeo, stMat);
+    scene.add(stars);
 
-    // 3. PROCEDURAL TEXTURES & MATERIALS
-    function mkTex(fn: (ctx: CanvasRenderingContext2D) => void) {
+    let dayTime = 0.35; // Mañana soleada inicial
+    const DAY_SPEED = 0.008;
+
+    // ─── TEXTURAS DE BLOQUES PROCEDURALES ────────────────────────────
+    function mkNoiseTex(hexColor: number): THREE.CanvasTexture {
       const c = document.createElement('canvas');
       c.width = 16;
       c.height = 16;
       const ctx = c.getContext('2d')!;
-      fn(ctx);
-      const t = new THREE.CanvasTexture(c);
-      t.magFilter = THREE.NearestFilter;
-      t.minFilter = THREE.NearestFilter;
-      return t;
-    }
-
-    function noise(ctx: CanvasRenderingContext2D, col: string, n = 35, sz = 1) {
-      ctx.fillStyle = col;
-      for (let i = 0; i < n; i++) {
-        ctx.fillRect((Math.random() * 16) | 0, (Math.random() * 16) | 0, sz, sz);
+      const col = new THREE.Color(hexColor);
+      for (let x = 0; x < 16; x++) {
+        for (let y = 0; y < 16; y++) {
+          const v = 0.88 + Math.random() * 0.24;
+          const r = Math.min(255, Math.floor(col.r * 255 * v));
+          const g = Math.min(255, Math.floor(col.g * 255 * v));
+          const b = Math.min(255, Math.floor(col.b * 255 * v));
+          ctx.fillStyle = `rgb(${r},${g},${b})`;
+          ctx.fillRect(x, y, 1, 1);
+        }
       }
+      ctx.strokeStyle = 'rgba(0,0,0,0.14)';
+      ctx.strokeRect(0, 0, 16, 16);
+      const tex = new THREE.CanvasTexture(c);
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.NearestFilter;
+      return tex;
     }
 
-    const TX = {
-      gTop: mkTex((c) => {
-        c.fillStyle = '#5a9e32';
-        c.fillRect(0, 0, 16, 16);
-        noise(c, '#4c8829', 45);
-        noise(c, '#6ab83d', 30);
-      }),
-      gSide: mkTex((c) => {
-        c.fillStyle = '#8B6538';
-        c.fillRect(0, 0, 16, 16);
-        noise(c, '#7a5730', 40);
-        c.fillStyle = '#5a9e32';
-        c.fillRect(0, 0, 16, 3);
-        for (let x = 0; x < 16; x++) {
-          c.fillRect(x, 3, 1, (Math.random() * 3) | 0);
-        }
-      }),
-      dirt: mkTex((c) => {
-        c.fillStyle = '#8B6538';
-        c.fillRect(0, 0, 16, 16);
-        noise(c, '#7a5730', 50);
-        noise(c, '#9c7543', 30);
-      }),
-      stone: mkTex((c) => {
-        c.fillStyle = '#808080';
-        c.fillRect(0, 0, 16, 16);
-        noise(c, '#6e6e6e', 55, 2);
-        noise(c, '#929292', 35);
-      }),
-      wSide: mkTex((c) => {
-        c.fillStyle = '#6B4c2a';
-        c.fillRect(0, 0, 16, 16);
-        c.fillStyle = '#5a3e20';
-        for (let x = 0; x < 16; x += 3) c.fillRect(x, 0, 1, 16);
-        noise(c, '#7c5c36', 25);
-      }),
-      wTop: mkTex((c) => {
-        c.fillStyle = '#a07848';
-        c.fillRect(0, 0, 16, 16);
-        c.strokeStyle = '#6B4c2a';
-        c.lineWidth = 1;
-        c.strokeRect(1, 1, 14, 14);
-        c.strokeRect(4, 4, 8, 8);
-      }),
-      leaf: mkTex((c) => {
-        c.fillStyle = '#2e6e1e';
-        c.fillRect(0, 0, 16, 16);
-        noise(c, '#235816', 50);
-        noise(c, '#3d8829', 40);
-      }),
-      sand: mkTex((c) => {
-        c.fillStyle = '#dbd08c';
-        c.fillRect(0, 0, 16, 16);
-        noise(c, '#ccc07a', 45);
-        noise(c, '#eae09e', 30);
-      }),
-      water: mkTex((c) => {
-        c.fillStyle = '#2868a8';
-        c.fillRect(0, 0, 16, 16);
-        c.fillStyle = '#3478b8';
-        for (let y = 0; y < 16; y += 4) c.fillRect(0, y, 16, 2);
-      }),
-      brick: mkTex((c) => {
-        c.fillStyle = '#a04838';
-        c.fillRect(0, 0, 16, 16);
-        c.fillStyle = '#c8bfb0';
-        for (let y = 0; y < 16; y += 4) {
-          c.fillRect(0, y, 16, 1);
-          const off = ((y / 4) % 2) * 4;
-          for (let x = off; x < 16; x += 8) c.fillRect(x, y, 1, 4);
-        }
-      }),
-      plank: mkTex((c) => {
-        c.fillStyle = '#b8935a';
-        c.fillRect(0, 0, 16, 16);
-        c.fillStyle = '#9e7c48';
-        for (let y = 0; y < 16; y += 4) c.fillRect(0, y, 16, 1);
-        noise(c, '#c8a368', 25);
-      }),
-      glass: mkTex((c) => {
-        c.clearRect(0, 0, 16, 16);
-        c.strokeStyle = '#c8e8ff';
-        c.lineWidth = 2;
-        c.strokeRect(1, 1, 14, 14);
-        c.fillStyle = 'rgba(190,225,255,0.18)';
-        c.fillRect(2, 2, 12, 12);
-      }),
-      cobble: mkTex((c) => {
-        c.fillStyle = '#6e6e6e';
-        c.fillRect(0, 0, 16, 16);
-        noise(c, '#585858', 50, 2);
-        noise(c, '#858585', 40, 2);
-      }),
-      door: mkTex((c) => {
-        c.fillStyle = '#6B4226';
-        c.fillRect(0, 0, 16, 16);
-        c.fillStyle = '#54321a';
-        c.fillRect(2, 2, 5, 5);
-        c.fillRect(9, 2, 5, 5);
-        c.fillRect(2, 9, 5, 5);
-        c.fillRect(9, 9, 5, 5);
-        c.fillStyle = '#ffd700';
-        c.fillRect(12, 8, 2, 2);
-      }),
-      snow: mkTex((c) => {
-        c.fillStyle = '#f0f5f8';
-        c.fillRect(0, 0, 16, 16);
-        noise(c, '#dce6ec', 35);
-      }),
-      craftTop: mkTex((c) => {
-        c.fillStyle = '#8B5A2B';
-        c.fillRect(0, 0, 16, 16);
-        c.strokeStyle = '#3d2314';
-        c.lineWidth = 1;
-        for (let i = 0; i <= 16; i += 5) {
-          c.beginPath();
-          c.moveTo(i, 0);
-          c.lineTo(i, 16);
-          c.stroke();
-          c.beginPath();
-          c.moveTo(0, i);
-          c.lineTo(16, i);
-          c.stroke();
-        }
-      }),
-      bedTop: mkTex((c) => {
-        c.fillStyle = '#cc2233';
-        c.fillRect(0, 0, 16, 16);
-        c.fillStyle = '#f0f0f0';
-        c.fillRect(0, 0, 16, 5);
-        c.fillStyle = '#aa1828';
-        c.fillRect(0, 5, 16, 1);
-      }),
-      bedSide: mkTex((c) => {
-        c.fillStyle = '#b8935a';
-        c.fillRect(0, 0, 16, 16);
-        c.fillStyle = '#cc2233';
-        c.fillRect(0, 2, 16, 8);
-      }),
-      lava: mkTex((c) => {
-        c.fillStyle = '#ff5500';
-        c.fillRect(0, 0, 16, 16);
-        noise(c, '#ffaa00', 40, 2);
-      }),
-      bedrock: mkTex((c) => {
-        c.fillStyle = '#222222';
-        c.fillRect(0, 0, 16, 16);
-        noise(c, '#444444', 50, 2);
-      }),
-      ice: mkTex((c) => {
-        c.fillStyle = '#aaddff';
-        c.fillRect(0, 0, 16, 16);
-        noise(c, '#ffffff', 30);
-      }),
-    };
+    const BMAT: Record<number, THREE.MeshLambertMaterial> = {};
+    for (const [k, d] of Object.entries(BD)) {
+      const id = Number(k);
+      const o: THREE.MeshLambertMaterialParameters = {
+        map: mkNoiseTex(d.c),
+      };
+      if (d.tr) {
+        o.transparent = true;
+        o.opacity = d.op;
+      }
+      if (d.em) {
+        o.emissive = new THREE.Color(d.em);
+      }
+      BMAT[id] = new THREE.MeshLambertMaterial(o);
+    }
 
-    const ml = (t: THREE.Texture, tr = false, op = 1) =>
-      new THREE.MeshLambertMaterial({ map: t, transparent: tr, opacity: op });
+    // ─── MUNDO INFINITO POR CHUNKS Y GUARDADO AUTOMÁTICO ─────────────
+    const world = createInfiniteWorld();
+    const PL1 = createPlayer();
+    plRef.current = PL1;
 
-    const MATS: Record<number, THREE.Material | THREE.Material[]> = {
-      [BT.GRASS]: [ml(TX.gSide), ml(TX.gSide), ml(TX.gTop), ml(TX.dirt), ml(TX.gSide), ml(TX.gSide)],
-      [BT.DIRT]: ml(TX.dirt),
-      [BT.STONE]: ml(TX.stone),
-      [BT.WOOD]: [ml(TX.wSide), ml(TX.wSide), ml(TX.wTop), ml(TX.wTop), ml(TX.wSide), ml(TX.wSide)],
-      [BT.LEAVES]: ml(TX.leaf),
-      [BT.SAND]: ml(TX.sand),
-      [BT.WATER]: ml(TX.water, true, 0.72),
-      [BT.BRICK]: ml(TX.brick),
-      [BT.PLANK]: ml(TX.plank),
-      [BT.GLASS]: ml(TX.glass, true, 0.45),
-      [BT.COBBLE]: ml(TX.cobble),
-      [BT.DOOR]: ml(TX.door),
-      [BT.SNOW]: ml(TX.snow),
-      [BT.TABLE]: [ml(TX.plank), ml(TX.plank), ml(TX.craftTop), ml(TX.plank), ml(TX.plank), ml(TX.plank)],
-      [BT.BED]: [ml(TX.bedSide), ml(TX.bedSide), ml(TX.bedTop), ml(TX.plank), ml(TX.bedSide), ml(TX.bedSide)],
-      [BT.LAVA]: new THREE.MeshBasicMaterial({ map: TX.lava }),
-      [BT.BEDROCK]: ml(TX.bedrock),
-      [BT.ICE]: ml(TX.ice, true, 0.8),
-    };
+    // Requisito 3: Recuperar automáticamente el progreso guardado al cargar la página
+    try {
+      const savedRaw = localStorage.getItem(SAVE_STORAGE_KEY);
+      if (savedRaw) {
+        const res = deserializeSaveGame(savedRaw, world, PL1);
+        if (res.restored) {
+          camAnglesRef.current.yaw = res.yaw;
+          camAnglesRef.current.pitch = res.pitch;
+        }
+      }
+    } catch {
+      // Continuar con mundo nuevo si no hay guardado previo
+    }
 
-    // 4. INFINITE CHUNK WORLD GENERATION & MESHING
-    const RENDER_RADIUS = isSoftwareGl ? 2 : 3;
-    const world: InfiniteWorld = createInfiniteWorld();
-    ensureChunksAroundPlayer(world, SPAWN_X, SPAWN_Z, RENDER_RADIUS);
+    const VIEW_CHUNK_RADIUS = 2; // 5x5 chunks = 80x80 bloques activos con descarga dinámica
+    ensureChunksAroundPlayer(world, PL1.pos.x, PL1.pos.z, VIEW_CHUNK_RADIUS);
 
     const bGeo = new THREE.BoxGeometry(1, 1, 1);
-    const wMeshGroup = new THREE.Group();
-    scene.add(wMeshGroup);
-    let instMeshes: Record<number, THREE.InstancedMesh> = {};
+    // Geometría de puerta abierta (rotada en la bisagra para dejar el paso libre visualmente)
+    const openDoorGeo = new THREE.BoxGeometry(0.18, 1, 0.96);
+    openDoorGeo.translate(-0.41, 0, 0);
+
+    const iMeshes: Record<number, THREE.InstancedMesh> = {};
     const dummy = new THREE.Object3D();
+    const frustum = new THREE.Frustum();
+    const projScreenMatrix = new THREE.Matrix4();
 
-    let lastBuiltCenterCx = -99999;
-    let lastBuiltCenterCz = -99999;
-
-    function rebuildMeshes(centerX: number, centerZ: number) {
-      ensureChunksAroundPlayer(world, centerX, centerZ, RENDER_RADIUS);
-      lastBuiltCenterCx = Math.floor(centerX / 16);
-      lastBuiltCenterCz = Math.floor(centerZ / 16);
-
-      while (wMeshGroup.children.length) {
-        const m = wMeshGroup.children[0] as THREE.InstancedMesh;
-        m.dispose();
-        wMeshGroup.remove(m);
+    function vis(x: number, y: number, z: number): boolean {
+      const b = gB(world, x, y, z);
+      if (b === BT.AIR) return false;
+      if (b === BT.DOOR_OPEN) return true;
+      for (const [dx, dy, dz] of [
+        [1, 0, 0],
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [0, 0, 1],
+        [0, 0, -1],
+      ]) {
+        const nb = gB(world, x + dx, y + dy, z + dz);
+        if (nb === BT.AIR || (BD[nb]?.tr && nb !== b)) return true;
       }
-      instMeshes = {};
+      return false;
+    }
 
-      const buckets: Record<number, number[]> = {};
-      const minX = Math.floor(centerX) - RENDER_RADIUS * 16;
-      const maxX = Math.floor(centerX) + RENDER_RADIUS * 16;
-      const minZ = Math.floor(centerZ) - RENDER_RADIUS * 16;
-      const maxZ = Math.floor(centerZ) + RENDER_RADIUS * 16;
+    let activeCenterCX = Math.floor(PL1.pos.x / CHUNK_SIZE);
+    let activeCenterCZ = Math.floor(PL1.pos.z / CHUNK_SIZE);
 
-      for (let x = minX; x <= maxX; x++) {
-        for (let z = minZ; z <= maxZ; z++) {
+    // Requisito 8: InstancedMesh + Frustum Culling + Despawn de Chunks lejanos
+    function rebuildMeshes(): void {
+      for (const k of Object.keys(iMeshes)) {
+        const id = Number(k);
+        scene.remove(iMeshes[id]);
+        iMeshes[id].dispose();
+        delete iMeshes[id];
+      }
+
+      const cnt: Record<number, number> = {};
+      const pos: Record<number, number[]> = {};
+
+      const minX = (activeCenterCX - VIEW_CHUNK_RADIUS) * CHUNK_SIZE;
+      const maxX = (activeCenterCX + VIEW_CHUNK_RADIUS + 1) * CHUNK_SIZE;
+      const minZ = (activeCenterCZ - VIEW_CHUNK_RADIUS) * CHUNK_SIZE;
+      const maxZ = (activeCenterCZ + VIEW_CHUNK_RADIUS + 1) * CHUNK_SIZE;
+
+      for (let x = minX; x < maxX; x++) {
+        for (let z = minZ; z < maxZ; z++) {
           for (let y = 0; y < WH; y++) {
             const b = gB(world, x, y, z);
-            if (b === BT.AIR) continue;
-            if (b === BT.WATER && y < SEA && gB(world, x, y + 1, z) === BT.WATER) continue;
-
-            const vis =
-              b === BT.WATER ||
-              b === BT.GLASS ||
-              gB(world, x + 1, y, z) === 0 ||
-              gB(world, x - 1, y, z) === 0 ||
-              gB(world, x, y + 1, z) === 0 ||
-              gB(world, x, y - 1, z) === 0 ||
-              gB(world, x, y, z + 1) === 0 ||
-              gB(world, x, y, z - 1) === 0 ||
-              gB(world, x + 1, y, z) === BT.WATER ||
-              gB(world, x - 1, y, z) === BT.WATER ||
-              gB(world, x, y + 1, z) === BT.WATER ||
-              gB(world, x, y, z + 1) === BT.WATER ||
-              gB(world, x, y, z - 1) === BT.WATER ||
-              gB(world, x + 1, y, z) === BT.GLASS ||
-              gB(world, x - 1, y, z) === BT.GLASS ||
-              gB(world, x, y + 1, z) === BT.GLASS ||
-              gB(world, x, y, z + 1) === BT.GLASS ||
-              gB(world, x, y, z - 1) === BT.GLASS;
-
-            if (vis) {
-              if (!buckets[b]) buckets[b] = [];
-              buckets[b].push(x, y, z);
+            if (b !== BT.AIR && !BD[b]?.isItemOnly && vis(x, y, z)) {
+              cnt[b] = (cnt[b] || 0) + 1;
+              (pos[b] = pos[b] || []).push(x, y, z);
             }
           }
         }
       }
 
-      for (const tStr in buckets) {
-        const t = Number(tStr);
-        const pos = buckets[t];
-        const cnt = pos.length / 3;
-        const mat = MATS[t] || MATS[BT.STONE];
-        const im = new THREE.InstancedMesh(bGeo, mat, cnt);
-        if (t !== BT.WATER && t !== BT.GLASS && t !== BT.LAVA && !isSoftwareGl) {
-          im.castShadow = true;
-          im.receiveShadow = true;
-        }
-        for (let i = 0; i < cnt; i++) {
-          dummy.position.set(pos[i * 3] + 0.5, pos[i * 3 + 1] + 0.5, pos[i * 3 + 2] + 0.5);
+      for (const [k, c] of Object.entries(cnt)) {
+        const b = Number(k);
+        if (!c || !BMAT[b]) continue;
+        const geoToUse = b === BT.DOOR_OPEN ? openDoorGeo : bGeo;
+        const im = new THREE.InstancedMesh(geoToUse, BMAT[b], c);
+        const p = pos[b];
+        for (let i = 0; i < c; i++) {
+          dummy.position.set(p[i * 3] + 0.5, p[i * 3 + 1] + 0.5, p[i * 3 + 2] + 0.5);
+          dummy.rotation.set(0, 0, 0);
+          dummy.scale.set(1, 1, 1);
           dummy.updateMatrix();
           im.setMatrixAt(i, dummy.matrix);
         }
         im.instanceMatrix.needsUpdate = true;
-        wMeshGroup.add(im);
-        instMeshes[t] = im;
+        // Requisito 8: Frustum Culling activo en cada InstancedMesh
+        im.computeBoundingBox();
+        im.computeBoundingSphere();
+        im.frustumCulled = true;
+        scene.add(im);
+        iMeshes[b] = im;
       }
     }
 
-    // 5. PLAYER 1 STATE
-    const PL1: PlayerState = createPlayer();
-    let yaw = 0.75; // Mirando hacia el árbol inicial en (4,4)
-    let pitch = -0.1;
+    rebuildMeshes();
 
-    syncInventoryUI(PL1);
-    rebuildMeshes(PL1.pos.x, PL1.pos.z);
+    // ─── PARTÍCULAS Y FEEDBACK VISUAL ────────────────────────────────
+    const particles: FloatingParticle[] = [];
+    const partGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
 
-    const hlBox = new THREE.LineSegments(
-      new THREE.EdgesGeometry(new THREE.BoxGeometry(1.006, 1.006, 1.006)),
-      new THREE.LineBasicMaterial({ color: 0x22d3ee })
+    function spawnBlockParticles(wx: number, wy: number, wz: number, colorHex: number, count = 12) {
+      const mat = new THREE.MeshLambertMaterial({ color: colorHex });
+      for (let i = 0; i < count; i++) {
+        const m = new THREE.Mesh(partGeo, mat);
+        m.position.set(
+          wx + 0.2 + Math.random() * 0.6,
+          wy + 0.2 + Math.random() * 0.6,
+          wz + 0.2 + Math.random() * 0.6
+        );
+        scene.add(m);
+        particles.push({
+          mesh: m,
+          vel: new THREE.Vector3(
+            (Math.random() - 0.5) * 4.2,
+            1.8 + Math.random() * 3.2,
+            (Math.random() - 0.5) * 4.2
+          ),
+          life: 0.42 + Math.random() * 0.22,
+          maxLife: 0.64,
+        });
+      }
+    }
+
+    const selBox = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(1.01, 1.01, 1.01)),
+      new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.85 })
     );
-    scene.add(hlBox);
+    selBox.visible = false;
+    scene.add(selBox);
 
-    // 6. ENTITIES, SPIDERS, LOST VILLAGERS & BOATS
-    const ENT: ThreeEntity[] = [];
-    const BOATS: ThreeBoat[] = [];
-    let nextEntId = 1;
+    // ─── MODELOS 3D DE BOTES Y CABALLOS ──────────────────────────────
+    const boats: BoatData[] = [];
+    const boatMeshes = new Map<number, THREE.Group>();
     let nextBoatId = 1;
 
-    function box(
+    function createBoatMesh(): THREE.Group {
+      const g = new THREE.Group();
+      const woodMat = new THREE.MeshLambertMaterial({ color: 0x8b5a2b });
+      const plankMat = new THREE.MeshLambertMaterial({ color: 0xc1874b });
+      const base = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.22, 1.65), woodMat);
+      base.position.set(0, 0.11, 0);
+      g.add(base);
+
+      const leftSide = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.34, 1.65), plankMat);
+      leftSide.position.set(-0.52, 0.28, 0);
+      g.add(leftSide);
+
+      const rightSide = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.34, 1.65), plankMat);
+      rightSide.position.set(0.52, 0.28, 0);
+      g.add(rightSide);
+
+      const front = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.34, 0.14), plankMat);
+      front.position.set(0, 0.28, -0.76);
+      g.add(front);
+
+      const back = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.34, 0.14), plankMat);
+      back.position.set(0, 0.28, 0.76);
+      g.add(back);
+
+      return g;
+    }
+
+    function spawnBoatVisual(b: BoatData) {
+      if (boatMeshes.has(b.id)) return;
+      const m = createBoatMesh();
+      m.position.set(b.pos.x, b.pos.y, b.pos.z);
+      m.rotation.y = b.yaw;
+      scene.add(m);
+      boatMeshes.set(b.id, m);
+    }
+
+    // ─── MULTIJUGADOR ONLINE (PEERJS), PVP Y AVATARES 3D ─────────────
+    let peerInstance: Peer | null = null;
+    let myPeerId = 'LOCAL';
+    const connections = new Map<string, DataConnection>();
+    const remotePlayers = new Map<string, RemotePlayerVisual>();
+
+    function createRemotePlayerMesh(clothesIdx = 0): {
+      group: THREE.Group;
+      head: THREE.Mesh;
+      torso: THREE.Mesh;
+      legs: THREE.Mesh[];
+      arms: THREE.Mesh[];
+    } {
+      const group = new THREE.Group();
+      const palette = CLOTHES_PALETTE[clothesIdx % CLOTHES_PALETTE.length] || CLOTHES_PALETTE[0];
+      const skinMat = new THREE.MeshLambertMaterial({ color: 0xf1c27d });
+      const shirtMat = new THREE.MeshLambertMaterial({ color: palette.hex });
+      const pantsMat = new THREE.MeshLambertMaterial({ color: 0x1e293b });
+      const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      const pupilMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
+
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.48, 0.48), skinMat);
+      head.position.set(0, 1.48, 0);
+      group.add(head);
+
+      const eyeL = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.08, 0.05), eyeMat);
+      eyeL.position.set(-0.11, 1.5, -0.25);
+      group.add(eyeL);
+      const eyeR = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.08, 0.05), eyeMat);
+      eyeR.position.set(0.11, 1.5, -0.25);
+      group.add(eyeR);
+
+      const pupL = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.06), pupilMat);
+      pupL.position.set(-0.11, 1.5, -0.26);
+      group.add(pupL);
+      const pupR = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.06), pupilMat);
+      pupR.position.set(0.11, 1.5, -0.26);
+      group.add(pupR);
+
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.68, 0.28), shirtMat);
+      torso.position.set(0, 0.9, 0);
+      group.add(torso);
+
+      const arms: THREE.Mesh[] = [];
+      for (const sx of [-0.36, 0.36]) {
+        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.62, 0.2), shirtMat);
+        arm.position.set(sx, 0.92, 0);
+        group.add(arm);
+        arms.push(arm);
+      }
+
+      const legs: THREE.Mesh[] = [];
+      for (const sx of [-0.13, 0.13]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.56, 0.22), pantsMat);
+        leg.position.set(sx, 0.28, 0);
+        group.add(leg);
+        legs.push(leg);
+      }
+
+      scene.add(group);
+      return { group, head, torso, legs, arms };
+    }
+
+    function addFloatingChatBubble(peerId: string, senderLabel: string, text: string, isLocal: boolean) {
+      const clean = text.trim().slice(0, 90);
+      if (!clean) return;
+      const bubble: FloatingChatBubble = {
+        id: `${Date.now()}-${Math.random()}`,
+        peerId,
+        senderLabel,
+        text: clean,
+        expiresAt: performance.now() + 5000, // 5 segundos exactos
+        screenX: window.innerWidth * 0.5,
+        screenY: isLocal ? 120 : window.innerHeight * 0.35,
+        visible: true,
+        isLocal,
+      };
+      floatingChatsRef.current = [
+        ...floatingChatsRef.current.filter((b) => b.peerId !== peerId),
+        bubble,
+      ];
+      setFloatingChats([...floatingChatsRef.current]);
+    }
+
+    function broadcastNetMessage(msg: NetworkMessage, excludePeerId?: string) {
+      for (const [pid, conn] of connections.entries()) {
+        if (pid !== excludePeerId && conn.open) {
+          try {
+            conn.send(msg);
+          } catch {
+            // Ignorar envío fallido
+          }
+        }
+      }
+    }
+
+    function triggerPlayerDeathAndRespawn(reasonMsg: string) {
+      playSfx('redlight');
+      PL1.inBoat = false;
+      PL1.activeBoatId = null;
+      PL1.mountedHorseId = null;
+      PL1.hp = 20;
+      PL1.invul = 2.0;
+      ensureChunksAroundPlayer(world, SPAWN_X, SPAWN_Z, VIEW_CHUNK_RADIUS);
+      PL1.pos.x = SPAWN_X;
+      PL1.pos.y = getSpawnY();
+      PL1.pos.z = SPAWN_Z;
+      PL1.vel.x = 0;
+      PL1.vel.y = 0;
+      PL1.vel.z = 0;
+      activeCenterCX = Math.floor(PL1.pos.x / CHUNK_SIZE);
+      activeCenterCZ = Math.floor(PL1.pos.z / CHUNK_SIZE);
+      rebuildMeshes();
+      showMsg(reasonMsg);
+    }
+
+    function handleIncomingNetMessage(msg: NetworkMessage, fromConn: DataConnection) {
+      if (!msg || typeof msg !== 'object') return;
+
+      if (msg.type === 'player:move') {
+        let rp = remotePlayers.get(msg.peerId);
+        if (!rp) {
+          const built = createRemotePlayerMesh(msg.clothesIdx || 0);
+          rp = {
+            peerId: msg.peerId,
+            group: built.group,
+            head: built.head,
+            torso: built.torso,
+            legs: built.legs,
+            arms: built.arms,
+            targetPos: new THREE.Vector3(msg.x, msg.y, msg.z),
+            targetYaw: msg.yaw,
+            targetPitch: msg.pitch,
+            heldBlock: msg.heldBlock,
+            inBoat: msg.inBoat,
+            mountedHorse: msg.mountedHorse,
+            clothesIdx: msg.clothesIdx || 0,
+            walkPhase: msg.walkPhase || 0,
+            lastSeen: performance.now(),
+          };
+          rp.group.position.set(msg.x, msg.y, msg.z);
+          remotePlayers.set(msg.peerId, rp);
+          setPeerCount(connections.size + 1);
+        } else {
+          rp.targetPos.set(msg.x, msg.y, msg.z);
+          rp.targetYaw = msg.yaw;
+          rp.targetPitch = msg.pitch;
+          rp.heldBlock = msg.heldBlock;
+          rp.inBoat = msg.inBoat;
+          rp.mountedHorse = msg.mountedHorse;
+          rp.walkPhase = msg.walkPhase || 0;
+          if (rp.clothesIdx !== msg.clothesIdx) {
+            rp.clothesIdx = msg.clothesIdx;
+            const entry = CLOTHES_PALETTE[rp.clothesIdx % CLOTHES_PALETTE.length] || CLOTHES_PALETTE[0];
+            (rp.torso.material as THREE.MeshLambertMaterial).color.setHex(entry.hex);
+          }
+          rp.lastSeen = performance.now();
+        }
+        broadcastNetMessage(msg, fromConn.peer);
+      } else if (msg.type === 'block:set') {
+        sB(world, msg.x, msg.y, msg.z, msg.blockType);
+        rebuildMeshes();
+        broadcastNetMessage(msg, fromConn.peer);
+      } else if (msg.type === 'door:toggle') {
+        toggleTwoBlockDoorLogic(world, msg.x, msg.y, msg.z);
+        playSfx('door');
+        rebuildMeshes();
+        broadcastNetMessage(msg, fromConn.peer);
+      } else if (msg.type === 'pvp:hit') {
+        if (msg.targetPeerId === myPeerId || msg.targetPeerId === 'ALL') {
+          // Requisito 1: PvP daño de 1 corazón (2 HP) por golpe; si muere reaparece en Spawn
+          const dmg = msg.damage || 2;
+          PL1.hp = Math.max(0, PL1.hp - dmg);
+          PL1.invul = 0.5;
+          playSfx('hurt');
+          triggerDamageOverlay();
+          if (PL1.hp <= 0) {
+            triggerPlayerDeathAndRespawn('💀 ¡Fuiste derrotado en PvP! Reapareciendo en el Spawn...');
+          } else {
+            showMsg('⚔️ ¡Recibiste un golpe PvP (-1 ❤️)!');
+          }
+        }
+        broadcastNetMessage(msg, fromConn.peer);
+      } else if (msg.type === 'chat:msg') {
+        addFloatingChatBubble(msg.peerId, msg.senderLabel || 'Jugador', msg.text, false);
+        broadcastNetMessage(msg, fromConn.peer);
+      } else if (msg.type === 'clothes:change') {
+        const rp = remotePlayers.get(msg.peerId);
+        if (rp) {
+          rp.clothesIdx = msg.clothesIdx;
+          const entry = CLOTHES_PALETTE[rp.clothesIdx % CLOTHES_PALETTE.length] || CLOTHES_PALETTE[0];
+          (rp.torso.material as THREE.MeshLambertMaterial).color.setHex(entry.hex);
+        }
+        broadcastNetMessage(msg, fromConn.peer);
+      } else if (msg.type === 'challenge:state') {
+        challengeStateRef.current = msg.state;
+        setChallengeState(msg.state);
+        if (msg.state === 'green') playSfx('greenlight');
+        else if (msg.state === 'red') playSfx('redlight');
+        broadcastNetMessage(msg, fromConn.peer);
+      } else if (msg.type === 'world:sync') {
+        for (const [key, bType] of msg.modifications) {
+          const [sx, sy, sz] = key.split(',').map(Number);
+          if (!Number.isNaN(sx) && !Number.isNaN(sy) && !Number.isNaN(sz)) {
+            sB(world, sx, sy, sz, bType);
+          }
+        }
+        dayTime = msg.dayTime;
+        challengeStateRef.current = msg.challengeState || 'off';
+        setChallengeState(challengeStateRef.current);
+        rebuildMeshes();
+      }
+    }
+
+    function registerConnection(conn: DataConnection) {
+      conn.on('open', () => {
+        connections.set(conn.peer, conn);
+        setPeerCount(connections.size + 1);
+        setMpStatus((prev) => (prev === 'hosting' ? 'hosting' : 'connected'));
+        setMpError(null);
+
+        const modifications = Array.from(world.modified.entries());
+        conn.send({
+          type: 'world:sync',
+          modifications,
+          dayTime,
+          challengeState: challengeStateRef.current,
+        } satisfies NetworkMessage);
+
+        showMsg('🌐 ¡Jugador conectado a la sala P2P!');
+      });
+
+      conn.on('data', (raw) => {
+        handleIncomingNetMessage(raw as NetworkMessage, conn);
+      });
+
+      conn.on('close', () => {
+        connections.delete(conn.peer);
+        const rp = remotePlayers.get(conn.peer);
+        if (rp) {
+          scene.remove(rp.group);
+          remotePlayers.delete(conn.peer);
+        }
+        setPeerCount(connections.size + 1);
+      });
+    }
+
+    function startHostingRoom() {
+      setMpError(null);
+      const code = generateRoomCode();
+      setRoomCode(code);
+      setIsHost(true);
+      setMpStatus('connecting');
+
+      try {
+        if (peerInstance) peerInstance.destroy();
+        const peer = new Peer(`${PEER_PREFIX}${code}`);
+        peerInstance = peer;
+
+        peer.on('open', (id) => {
+          myPeerId = id;
+          setMpStatus('hosting');
+          showMsg(`📡 Sala creada: Código ${code}`);
+        });
+
+        peer.on('connection', (conn) => {
+          registerConnection(conn);
+        });
+
+        peer.on('error', () => {
+          setMpStatus('hosting');
+        });
+      } catch {
+        setMpStatus('hosting');
+      }
+    }
+
+    function connectToExistingRoom(rawCode: string) {
+      const clean = normalizeRoomCode(rawCode);
+      if (clean.length < 4) {
+        setMpError('Ingresa un código válido de 4 a 5 caracteres.');
+        return;
+      }
+      setMpError(null);
+      setRoomCode(clean);
+      setIsHost(false);
+      setMpStatus('connecting');
+
+      try {
+        if (peerInstance) peerInstance.destroy();
+        const peer = new Peer();
+        peerInstance = peer;
+
+        peer.on('open', (id) => {
+          myPeerId = id;
+          const conn = peer.connect(`${PEER_PREFIX}${clean}`, { reliable: true });
+          registerConnection(conn);
+          setShowJoinModal(false);
+        });
+
+        peer.on('error', () => {
+          setMpError(`No se pudo conectar a la sala ${clean}. Verifica el código.`);
+          setMpStatus('offline');
+        });
+      } catch {
+        setMpError('Error al inicializar PeerJS.');
+        setMpStatus('offline');
+      }
+    }
+
+    // ─── ENTIDADES: PECES, OVEJAS, CABALLOS, ZOMBIES, ARAÑAS, LOBOS, ENDERMAN ──
+    const entities: MeshEntity[] = [];
+    let nextEntityId = 1;
+
+    function mkBox(
       w: number,
       h: number,
       d: number,
-      col: number,
-      x = 0,
-      y = 0,
-      z = 0
+      c: number,
+      ox = 0,
+      oy = 0,
+      oz = 0
     ): THREE.Mesh {
       const m = new THREE.Mesh(
         new THREE.BoxGeometry(w, h, d),
-        new THREE.MeshLambertMaterial({ color: col })
+        new THREE.MeshLambertMaterial({ color: c })
       );
-      m.position.set(x, y, z);
-      if (!isSoftwareGl) m.castShadow = true;
+      m.position.set(ox, oy, oz);
       return m;
     }
 
-    function createVillagerMeshGroup(role: number, showRescueBeacon: boolean): {
-      g: THREE.Group;
-      l1: THREE.Mesh;
-      l2: THREE.Mesh;
-      beacon?: THREE.Mesh;
-    } {
+    function addFish(x: number, z: number) {
       const g = new THREE.Group();
-      const rCols = [0x8b5a2b, 0x22d3ee, 0x7b2d8b, 0x2d6b3b, 0xb83030, 0x3060a8];
-      const rc = rCols[role % rCols.length];
-      g.add(box(0.5, 0.7, 0.35, rc, 0, 0.65, 0));
-      g.add(box(0.45, 0.45, 0.45, 0xd4a574, 0, 1.25, 0));
-      g.add(box(0.1, 0.16, 0.12, 0xc09060, 0, 1.2, 0.25));
-      g.add(box(0.08, 0.06, 0.05, 0x222222, -0.1, 1.3, 0.23));
-      g.add(box(0.08, 0.06, 0.05, 0x222222, 0.1, 1.3, 0.23));
-      g.add(box(0.4, 0.25, 0.3, rc, 0, 0.75, 0.1));
-      const l1 = box(0.2, 0.3, 0.25, 0x5c3a1e, -0.12, 0.15, 0);
-      const l2 = box(0.2, 0.3, 0.25, 0x5c3a1e, 0.12, 0.15, 0);
-      g.add(l1, l2);
-      g.add(box(0.6, 0.12, 0.6, 0xd4b84a, 0, 1.52, 0));
-
-      let beacon: THREE.Mesh | undefined;
-      if (showRescueBeacon) {
-        beacon = new THREE.Mesh(
-          new THREE.BoxGeometry(0.28, 0.45, 0.28),
-          new THREE.MeshBasicMaterial({ color: 0xfacc15 })
-        );
-        beacon.position.set(0, 2.25, 0);
-        g.add(beacon);
-      }
-      return { g, l1, l2, beacon };
+      const fc = [0xff6622, 0xffaa00, 0x22ccff, 0xff3388][Math.floor(Math.random() * 4)];
+      g.add(mkBox(0.5, 0.25, 0.2, fc));
+      g.add(mkBox(0.2, 0.3, 0.15, fc, -0.3, 0, 0));
+      g.position.set(x, SEA - 0.8 - Math.random() * 1.5, z);
+      scene.add(g);
+      entities.push({
+        id: nextEntityId++,
+        mesh: g,
+        legs: [],
+        type: 'fish',
+        pos: g.position,
+        vel: new THREE.Vector3((Math.random() - 0.5) * 3, 0, (Math.random() - 0.5) * 3),
+        state: 'idle',
+        timer: Math.random() * 3,
+        windupTimer: 0,
+        hitFlashTimer: 0,
+        koTimer: 0,
+        alive: true,
+        hp: 4,
+        maxHp: 4,
+      });
     }
 
-    /**
-     * Requisito 3: La Aldea comienza completamente vacía (0 aldeanos).
-     * Los aldeanos se generan dispersos en islas lejanas, quietos y esperando ser rescatados.
-     */
-    function addLostVillager(x: number, z: number, role: number) {
-      ensureChunksAroundPlayer(world, x, z, 0);
-      const y = surfY(world, x | 0, z | 0);
-      const { g, l1, l2, beacon } = createVillagerMeshGroup(role, true);
-      g.position.set(x, y, z);
+    function addAnimal(type: 'cow' | 'sheep' | 'chicken', x: number, z: number) {
+      const g = new THREE.Group();
+      const sy = surfY(world, x, z);
+      if (sy <= SEA + 1) return;
+      const legs: THREE.Mesh[] = [];
+      const cfg = {
+        cow: {
+          bc: 0x8b5a2b,
+          hc: 0x6b3a1b,
+          bw: 0.9,
+          bh: 0.6,
+          bd: 1.2,
+          hw: 0.45,
+          hh: 0.45,
+          hd: 0.45,
+          lh: 0.45,
+          hp: 10,
+        },
+        sheep: {
+          bc: 0xf4f4f6,
+          hc: 0x555555,
+          bw: 0.85,
+          bh: 0.68,
+          bd: 1.05,
+          hw: 0.4,
+          hh: 0.4,
+          hd: 0.4,
+          lh: 0.4,
+          hp: 8,
+        },
+        chicken: {
+          bc: 0xf5f5dc,
+          hc: 0xf5f5dc,
+          bw: 0.4,
+          bh: 0.35,
+          bd: 0.5,
+          hw: 0.25,
+          hh: 0.28,
+          hd: 0.25,
+          lh: 0.25,
+          hp: 4,
+        },
+      }[type];
+
+      g.add(mkBox(cfg.bw, cfg.bh, cfg.bd, cfg.bc, 0, cfg.lh + cfg.bh / 2, 0));
+      g.add(mkBox(cfg.hw, cfg.hh, cfg.hd, cfg.hc, 0, cfg.lh + cfg.bh + cfg.hh / 3, cfg.bd / 2));
+      if (type === 'chicken') {
+        g.add(mkBox(0.1, 0.08, 0.15, 0xffaa00, 0, cfg.lh + cfg.bh + 0.1, cfg.bd / 2 + 0.18));
+        g.add(mkBox(0.08, 0.12, 0.1, 0xff2200, 0, cfg.lh + cfg.bh + 0.26, cfg.bd / 2 + 0.05));
+      }
+      const lPositions =
+        type === 'chicken'
+          ? [
+              [-0.1, 0],
+              [0.1, 0],
+            ]
+          : [
+              [-cfg.bw / 3, -cfg.bd / 3],
+              [cfg.bw / 3, -cfg.bd / 3],
+              [-cfg.bw / 3, cfg.bd / 3],
+              [cfg.bw / 3, cfg.bd / 3],
+            ];
+      for (const [lx, lz] of lPositions) {
+        const l = mkBox(0.16, cfg.lh, 0.16, cfg.hc, lx, cfg.lh / 2, lz);
+        g.add(l);
+        legs.push(l);
+      }
+      g.position.set(x, sy, z);
       scene.add(g);
-      ENT.push({
-        id: nextEntId++,
-        type: 'villager',
+      entities.push({
+        id: nextEntityId++,
         mesh: g,
+        legs,
+        type,
         pos: g.position,
-        vel: { x: 0, y: 0, z: 0 },
+        vel: new THREE.Vector3(),
         state: 'idle',
-        timer: 0,
+        timer: Math.random() * 4,
+        windupTimer: 0,
+        hitFlashTimer: 0,
+        koTimer: 0,
+        alive: true,
+        hp: cfg.hp,
+        maxHp: cfg.hp,
+      });
+    }
+
+    // Requisito 5: Modelo 3D de Caballo montable
+    function addHorse(x: number, z: number) {
+      const sy = surfY(world, x, z);
+      if (sy <= SEA + 1) return;
+      const g = new THREE.Group();
+      const coatColors = [0x8b4513, 0xa0522d, 0x6b3e26, 0xd2a679];
+      const coat = coatColors[Math.floor(Math.random() * coatColors.length)];
+      const maneCol = 0x2b1b12;
+      const saddleCol = 0xb45309;
+
+      // Cuerpo robusto
+      g.add(mkBox(0.88, 0.72, 1.55, coat, 0, 0.95, 0));
+      // Silla de montar
+      g.add(mkBox(0.92, 0.16, 0.58, saddleCol, 0, 1.34, -0.05));
+      // Cuello y cabeza
+      g.add(mkBox(0.38, 0.65, 0.42, coat, 0, 1.42, 0.68));
+      g.add(mkBox(0.36, 0.36, 0.62, coat, 0, 1.68, 0.92));
+      // Crin y cola
+      g.add(mkBox(0.14, 0.58, 0.18, maneCol, 0, 1.5, 0.45));
+      g.add(mkBox(0.18, 0.55, 0.18, maneCol, 0, 0.85, -0.84));
+
+      const legs: THREE.Mesh[] = [];
+      for (const [lx, lz] of [
+        [-0.28, -0.55],
+        [0.28, -0.55],
+        [-0.28, 0.55],
+        [0.28, 0.55],
+      ]) {
+        const leg = mkBox(0.22, 0.68, 0.22, coat, lx, 0.34, lz);
+        g.add(leg);
+        legs.push(leg);
+      }
+
+      g.position.set(x, sy, z);
+      scene.add(g);
+      entities.push({
+        id: nextEntityId++,
+        mesh: g,
+        legs,
+        type: 'horse',
+        pos: g.position,
+        vel: new THREE.Vector3(),
+        state: 'idle',
+        timer: Math.random() * 4,
         windupTimer: 0,
         hitFlashTimer: 0,
         koTimer: 0,
         alive: true,
         hp: 20,
         maxHp: 20,
-        dir: 0,
-        tmr: 0,
-        spd: 1.4,
-        legs: [l1, l2],
-        atkCd: 0,
-        home: { x, z },
-        rescued: false,
-        inBoat: false,
-        beacon,
+        riddenByPlayer: false,
       });
     }
 
-    function createBoatMeshGroup(): { mesh: THREE.Group; passengerMesh: THREE.Group } {
+    function addZombie(x: number, z: number, explicitY?: number): MeshEntity | null {
+      const sy = explicitY !== undefined ? explicitY : surfY(world, x, z);
+      if (sy <= SEA + 1) return null;
       const g = new THREE.Group();
-      // Casco de madera del bote (ancho y navegable)
-      g.add(box(1.5, 0.18, 2.3, 0x8b5a2b, 0, 0.09, 0));
-      // Bordes laterales
-      g.add(box(0.14, 0.38, 2.3, 0xa06b35, -0.68, 0.28, 0));
-      g.add(box(0.14, 0.38, 2.3, 0xa06b35, 0.68, 0.28, 0));
-      // Proa y popa
-      g.add(box(1.22, 0.38, 0.16, 0xa06b35, 0, 0.28, 1.07));
-      g.add(box(1.22, 0.38, 0.16, 0xa06b35, 0, 0.28, -1.07));
-      // Banco central y remos
-      g.add(box(1.2, 0.12, 0.35, 0xc89658, 0, 0.22, 0.15));
-      g.add(box(0.95, 0.08, 0.14, 0x5c3a1e, -0.95, 0.35, 0.15));
-      g.add(box(0.95, 0.08, 0.14, 0x5c3a1e, 0.95, 0.35, 0.15));
-
-      // Modelo de Aldeano Pasajero sentado en la popa del bote (oculto hasta rescatar uno)
-      const { g: passengerMesh } = createVillagerMeshGroup(1, false);
-      passengerMesh.scale.setScalar(0.85);
-      passengerMesh.position.set(0, 0.18, -0.55);
-      passengerMesh.visible = false;
-      g.add(passengerMesh);
-
-      return { mesh: g, passengerMesh };
-    }
-
-    function spawnBoatMesh(boatData: BoatData): ThreeBoat {
-      const { mesh, passengerMesh } = createBoatMeshGroup();
-      mesh.position.set(boatData.pos.x, boatData.pos.y, boatData.pos.z);
-      scene.add(mesh);
-      const tb: ThreeBoat = {
-        ...boatData,
-        mesh,
-        passengerMesh,
-      };
-      BOATS.push(tb);
-      return tb;
-    }
-
-    /**
-     * Requisito 2: Nuevo Modelo 3D de Araña Nocturna (ancha, oscura, 8 patas articuladas y ojos rojos brillantes)
-     */
-    function addSpider(x: number, z: number) {
-      ensureChunksAroundPlayer(world, x, z, 0);
-      const y = surfY(world, x | 0, z | 0);
-      if (y <= SEA + 1) return;
-
-      const g = new THREE.Group();
-      // Cefalotórax y abdomen ancho y oscuro
-      g.add(box(0.68, 0.36, 0.58, 0x1a1721, 0, 0.34, 0.24));
-      g.add(box(0.92, 0.46, 0.85, 0x121018, 0, 0.38, -0.35));
-      // Cabeza delantera
-      g.add(box(0.52, 0.32, 0.34, 0x221e2b, 0, 0.35, 0.56));
-
-      // 4 Ojos Rojos Brillantes
-      const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff1122 });
-      const e1 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.08, 0.05), eyeMat);
-      e1.position.set(-0.14, 0.4, 0.74);
-      const e2 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.08, 0.05), eyeMat);
-      e2.position.set(0.14, 0.4, 0.74);
-      const e3 = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.06, 0.05), eyeMat);
-      e3.position.set(-0.22, 0.32, 0.73);
-      const e4 = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.06, 0.05), eyeMat);
-      e4.position.set(0.22, 0.32, 0.73);
-      g.add(e1, e2, e3, e4);
-
-      // 8 Patas articuladas extendidas hacia los lados
       const legs: THREE.Mesh[] = [];
-      const zOffsets = [-0.36, -0.1, 0.14, 0.38];
-      for (const zo of zOffsets) {
-        const legL = box(0.62, 0.1, 0.1, 0x272330, -0.58, 0.24, zo);
-        legL.rotation.z = 0.32;
-        const legR = box(0.62, 0.1, 0.1, 0x272330, 0.58, 0.24, zo);
-        legR.rotation.z = -0.32;
-        g.add(legL, legR);
-        legs.push(legL, legR);
+      const arms: THREE.Mesh[] = [];
+      const eyes: THREE.Mesh[] = [];
+      const l1 = mkBox(0.22, 0.65, 0.22, 0x2244aa, -0.13, 0.325, 0);
+      const l2 = mkBox(0.22, 0.65, 0.22, 0x2244aa, 0.13, 0.325, 0);
+      g.add(l1, l2);
+      legs.push(l1, l2);
+      g.add(mkBox(0.5, 0.65, 0.28, 0x2d6e2d, 0, 0.975, 0));
+      g.add(mkBox(0.45, 0.45, 0.45, 0x3a8a3a, 0, 1.525, 0));
+      const eyeMat1 = new THREE.MeshBasicMaterial({ color: 0xff2200 });
+      const eyeMat2 = new THREE.MeshBasicMaterial({ color: 0xff2200 });
+      const e1 = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.07, 0.05), eyeMat1);
+      e1.position.set(-0.1, 1.56, 0.23);
+      const e2 = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.07, 0.05), eyeMat2);
+      e2.position.set(0.1, 1.56, 0.23);
+      g.add(e1, e2);
+      eyes.push(e1, e2);
+      const a1 = mkBox(0.18, 0.55, 0.18, 0x3a8a3a, -0.36, 1.0, 0.2);
+      const a2 = mkBox(0.18, 0.55, 0.18, 0x3a8a3a, 0.36, 1.0, 0.2);
+      a1.rotation.x = -1.2;
+      a2.rotation.x = -1.2;
+      g.add(a1, a2);
+      arms.push(a1, a2);
+      g.position.set(x, sy, z);
+      scene.add(g);
+      const ent: MeshEntity = {
+        id: nextEntityId++,
+        mesh: g,
+        legs,
+        arms,
+        eyes,
+        type: 'zombie',
+        pos: g.position,
+        vel: new THREE.Vector3(),
+        state: 'idle',
+        timer: 0,
+        windupTimer: 0,
+        hitFlashTimer: 0,
+        koTimer: 0,
+        alive: true,
+        hp: 15,
+        maxHp: 15,
+      };
+      entities.push(ent);
+      return ent;
+    }
+
+    function addSpider(x: number, z: number, explicitY?: number): MeshEntity | null {
+      const sy = explicitY !== undefined ? explicitY : surfY(world, x, z);
+      if (sy <= SEA + 1) return null;
+      const g = new THREE.Group();
+      const legs: THREE.Mesh[] = [];
+      const eyes: THREE.Mesh[] = [];
+
+      g.add(mkBox(0.95, 0.38, 1.15, 0x181820, 0, 0.35, -0.15));
+      g.add(mkBox(0.62, 0.35, 0.55, 0x22222c, 0, 0.38, 0.5));
+
+      const eyePositions = [
+        [-0.16, 0.44, 0.78],
+        [0.16, 0.44, 0.78],
+        [-0.07, 0.36, 0.79],
+        [0.07, 0.36, 0.79],
+      ];
+      for (const [ex, ey, ez] of eyePositions) {
+        const eye = new THREE.Mesh(
+          new THREE.BoxGeometry(0.08, 0.08, 0.05),
+          new THREE.MeshBasicMaterial({ color: 0xff1111 })
+        );
+        eye.position.set(ex, ey, ez);
+        g.add(eye);
+        eyes.push(eye);
       }
 
-      g.position.set(x, y, z);
+      for (const side of [-1, 1]) {
+        for (const zOff of [-0.35, -0.1, 0.15, 0.4]) {
+          const leg = mkBox(0.55, 0.1, 0.1, 0x252532, side * 0.62, 0.24, zOff);
+          leg.rotation.z = side * -0.35;
+          g.add(leg);
+          legs.push(leg);
+        }
+      }
+
+      g.position.set(x, sy, z);
       scene.add(g);
-      ENT.push({
-        id: nextEntId++,
-        type: 'spider',
+      const ent: MeshEntity = {
+        id: nextEntityId++,
         mesh: g,
+        legs,
+        eyes,
+        type: 'spider',
         pos: g.position,
-        vel: { x: 0, y: 0, z: 0 },
-        state: 'chase',
+        vel: new THREE.Vector3(),
+        state: 'idle',
         timer: 0,
         windupTimer: 0,
         hitFlashTimer: 0,
@@ -827,1043 +1380,215 @@ export default function App() {
         alive: true,
         hp: 12,
         maxHp: 12,
-        dir: Math.random() * 6.28,
-        tmr: 0,
-        spd: 3.6, // Rápida
-        legs,
-        atkCd: 0,
-        jumpCd: 1.2 + Math.random(),
-      });
-    }
-
-    const ANIMALS: Record<
-      string,
-      { b: [number, number, number]; h: [number, number, number]; l: [number, number]; col: number; spd: number }
-    > = {
-      cow: { b: [0.65, 0.55, 0.95], h: [0.42, 0.42, 0.4], l: [0.18, 0.32], col: 0x5c3820, spd: 1.3 },
-      sheep: { b: [0.65, 0.55, 0.85], h: [0.36, 0.36, 0.38], l: [0.15, 0.28], col: 0xf0ede6, spd: 1.4 },
-      chicken: { b: [0.32, 0.3, 0.4], h: [0.22, 0.25, 0.22], l: [0.06, 0.18], col: 0xfafafa, spd: 2.0 },
-    };
-
-    function addAnimal(type: 'cow' | 'sheep' | 'chicken', x: number, z: number) {
-      ensureChunksAroundPlayer(world, x, z, 0);
-      const y = surfY(world, x | 0, z | 0);
-      if (y <= SEA + 1) return;
-      const cfg = ANIMALS[type];
-      const g = new THREE.Group();
-      const [bw, bh, bd] = cfg.b;
-      const [hw, hh, hd] = cfg.h;
-      const [lw, lh] = cfg.l;
-      g.add(box(bw, bh, bd, cfg.col, 0, lh + bh / 2, 0));
-      const hdCol = type === 'sheep' ? 0x444444 : cfg.col;
-      g.add(box(hw, hh, hd, hdCol, 0, lh + bh - 0.05, bd / 2 + hd / 2 - 0.08));
-      g.add(box(0.06, 0.06, 0.04, 0x111111, -hw * 0.3, lh + bh + 0.02, bd / 2 + hd - 0.06));
-      g.add(box(0.06, 0.06, 0.04, 0x111111, hw * 0.3, lh + bh + 0.02, bd / 2 + hd - 0.06));
-      if (type === 'cow') {
-        g.add(box(0.22, 0.2, 0.02, 0xf0f0f0, bw / 2 + 0.01, lh + bh * 0.6, 0.1));
-        g.add(box(0.06, 0.14, 0.06, 0xd8d0b8, -hw * 0.4, lh + bh + hh * 0.4, bd / 2 + 0.1));
-        g.add(box(0.06, 0.14, 0.06, 0xd8d0b8, hw * 0.4, lh + bh + hh * 0.4, bd / 2 + 0.1));
-      }
-      if (type === 'chicken') {
-        g.add(box(0.08, 0.05, 0.1, 0xffaa00, 0, lh + bh - 0.06, bd / 2 + hd));
-        g.add(box(0.04, 0.1, 0.1, 0xcc2222, 0, lh + bh + hh * 0.4, bd / 2 + hd * 0.4));
-      }
-      const legs: THREE.Mesh[] = [];
-      const lx = bw * 0.32;
-      const lz = bd * 0.32;
-      for (const [ox, oz] of [
-        [-lx, -lz],
-        [lx, -lz],
-        [-lx, lz],
-        [lx, lz],
-      ]) {
-        const lCol = type === 'chicken' ? 0xffaa00 : type === 'sheep' ? 0x444444 : cfg.col;
-        const lg = box(lw, lh, lw, lCol, ox, lh / 2, oz);
-        g.add(lg);
-        legs.push(lg);
-      }
-      g.position.set(x, y, z);
-      scene.add(g);
-      ENT.push({
-        id: nextEntId++,
-        type,
-        mesh: g,
-        pos: g.position,
-        vel: { x: 0, y: 0, z: 0 },
-        state: 'idle',
-        timer: 0,
-        windupTimer: 0,
-        hitFlashTimer: 0,
-        koTimer: 0,
-        alive: true,
-        hp: 8,
-        maxHp: 8,
-        dir: Math.random() * 6.28,
-        tmr: Math.random() * 4,
-        spd: cfg.spd,
-        legs,
-        atkCd: 0,
-      });
-    }
-
-    function addShark(x: number, z: number) {
-      const g = new THREE.Group();
-      g.add(box(0.7, 0.45, 1.9, 0x48627a, 0, 0, 0));
-      g.add(box(0.62, 0.15, 1.6, 0xdce6f0, 0, -0.2, 0));
-      g.add(box(0.5, 0.32, 0.55, 0x48627a, 0, 0.02, 1.15));
-      g.add(box(0.4, 0.08, 0.35, 0xffffff, 0, -0.12, 1.1));
-      g.add(box(0.08, 0.55, 0.45, 0x364d63, 0, 0.45, -0.1));
-      const tail = box(0.1, 0.55, 0.5, 0x364d63, 0, 0.05, -1.15);
-      g.add(tail);
-      g.add(box(0.45, 0.06, 0.3, 0x364d63, -0.5, -0.1, 0.25));
-      g.add(box(0.45, 0.06, 0.3, 0x364d63, 0.5, -0.1, 0.25));
-      g.add(box(0.07, 0.07, 0.07, 0x111111, -0.26, 0.1, 0.9));
-      g.add(box(0.07, 0.07, 0.07, 0x111111, 0.26, 0.1, 0.9));
-      g.position.set(x, SEA - 0.3, z);
-      scene.add(g);
-      ENT.push({
-        id: nextEntId++,
-        type: 'shark',
-        mesh: g,
-        pos: g.position,
-        vel: { x: 0, y: 0, z: 0 },
-        state: 'idle',
-        timer: 0,
-        windupTimer: 0,
-        hitFlashTimer: 0,
-        koTimer: 0,
-        alive: true,
-        hp: 16,
-        maxHp: 16,
-        dir: Math.random() * 6.28,
-        tmr: Math.random() * 3,
-        spd: 3.4,
-        legs: [tail],
-        atkCd: 0,
-      });
+        jumpCd: 0,
+      };
+      entities.push(ent);
+      return ent;
     }
 
     function addWolf(x: number, z: number) {
-      ensureChunksAroundPlayer(world, x, z, 0);
-      const y = surfY(world, x | 0, z | 0);
-      if (y <= SEA + 1) return;
       const g = new THREE.Group();
-      g.add(box(0.45, 0.4, 0.85, 0x9aa0a6, 0, 0.42, 0));
-      g.add(box(0.5, 0.44, 0.35, 0x80868b, 0, 0.45, 0.28));
-      const collar = box(0.52, 0.46, 0.1, 0xcc2222, 0, 0.45, 0.38);
-      collar.visible = false;
-      g.add(collar);
-      g.add(box(0.38, 0.35, 0.38, 0x9aa0a6, 0, 0.58, 0.55));
-      g.add(box(0.2, 0.18, 0.26, 0x70757a, 0, 0.5, 0.82));
-      g.add(box(0.1, 0.14, 0.08, 0x70757a, -0.13, 0.8, 0.5));
-      g.add(box(0.1, 0.14, 0.08, 0x70757a, 0.13, 0.8, 0.5));
-      const eyeMat = new THREE.MeshBasicMaterial({ color: 0x222222 });
-      const e1 = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.05), eyeMat);
-      e1.position.set(-0.11, 0.62, 0.75);
-      const e2 = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.05), eyeMat);
-      e2.position.set(0.11, 0.62, 0.75);
-      g.add(e1, e2);
-      const tail = box(0.12, 0.12, 0.4, 0x80868b, 0, 0.5, -0.55);
-      g.add(tail);
+      const sy = surfY(world, x, z);
+      if (sy <= SEA + 1) return;
       const legs: THREE.Mesh[] = [];
-      for (const [ox, oz] of [
-        [-0.14, -0.28],
-        [0.14, -0.28],
-        [-0.14, 0.28],
-        [0.14, 0.28],
+      g.add(mkBox(0.6, 0.45, 0.9, 0x888888, 0, 0.55, 0));
+      g.add(mkBox(0.4, 0.4, 0.4, 0x999999, 0, 0.7, 0.5));
+      g.add(mkBox(0.2, 0.18, 0.25, 0x777777, 0, 0.63, 0.72));
+      g.add(mkBox(0.1, 0.14, 0.08, 0x666666, -0.13, 0.94, 0.45));
+      g.add(mkBox(0.1, 0.14, 0.08, 0x666666, 0.13, 0.94, 0.45));
+      g.add(mkBox(0.1, 0.1, 0.4, 0xaaaaaa, 0, 0.65, -0.55));
+      for (const [lx, lz] of [
+        [-0.18, -0.3],
+        [0.18, -0.3],
+        [-0.18, 0.3],
+        [0.18, 0.3],
       ]) {
-        const lg = box(0.13, 0.28, 0.13, 0x80868b, ox, 0.14, oz);
-        g.add(lg);
-        legs.push(lg);
+        const l = mkBox(0.14, 0.38, 0.14, 0x777777, lx, 0.19, lz);
+        g.add(l);
+        legs.push(l);
       }
-      g.position.set(x, y, z);
+      g.position.set(x, sy, z);
       scene.add(g);
-      ENT.push({
-        id: nextEntId++,
-        type: 'wolf',
+      entities.push({
+        id: nextEntityId++,
         mesh: g,
-        pos: g.position,
-        vel: { x: 0, y: 0, z: 0 },
-        state: 'idle',
-        timer: 0,
-        windupTimer: 0,
-        hitFlashTimer: 0,
-        koTimer: 0,
-        alive: true,
-        hp: 14,
-        maxHp: 14,
-        dir: Math.random() * 6.28,
-        tmr: Math.random() * 3,
-        spd: 2.3,
         legs,
-        tamed: false,
-        owner: null,
-        angry: false,
-        atkCd: 0,
-        collar,
-        eyeMat,
-        tail,
-      });
-    }
-
-    function addEnderman(x: number, z: number) {
-      ensureChunksAroundPlayer(world, x, z, 0);
-      const y = surfY(world, x | 0, z | 0);
-      if (y <= SEA + 1) return;
-      const g = new THREE.Group();
-      g.add(box(0.45, 0.9, 0.28, 0x111116, 0, 1.65, 0));
-      g.add(box(0.45, 0.45, 0.45, 0x111116, 0, 2.35, 0));
-      const em = new THREE.MeshBasicMaterial({ color: 0xe040fb });
-      const e1 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 0.05), em);
-      e1.position.set(-0.12, 2.35, 0.23);
-      const e2 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 0.05), em);
-      e2.position.set(0.12, 2.35, 0.23);
-      g.add(e1, e2);
-      const a1 = box(0.12, 1.3, 0.12, 0x111116, -0.32, 1.45, 0);
-      const a2 = box(0.12, 1.3, 0.12, 0x111116, 0.32, 1.45, 0);
-      const l1 = box(0.14, 1.2, 0.14, 0x111116, -0.12, 0.6, 0);
-      const l2 = box(0.14, 1.2, 0.14, 0x111116, 0.12, 0.6, 0);
-      g.add(a1, a2, l1, l2);
-      g.position.set(x, y, z);
-      scene.add(g);
-      ENT.push({
-        id: nextEntId++,
-        type: 'enderman',
-        mesh: g,
+        type: 'wolf',
         pos: g.position,
-        vel: { x: 0, y: 0, z: 0 },
+        vel: new THREE.Vector3(),
         state: 'idle',
-        timer: 0,
+        timer: Math.random() * 3,
         windupTimer: 0,
         hitFlashTimer: 0,
         koTimer: 0,
         alive: true,
-        hp: 28,
-        maxHp: 28,
-        dir: Math.random() * 6.28,
-        tmr: Math.random() * 3,
-        spd: 2.2,
-        legs: [l1, l2, a1, a2],
-        angry: false,
-        atkCd: 0,
-        tpCd: 0,
+        hp: 12,
+        maxHp: 12,
+        tamed: false,
+        wname: '',
       });
     }
 
-    function addZombie(x: number, z: number) {
-      ensureChunksAroundPlayer(world, x, z, 0);
-      const y = surfY(world, x | 0, z | 0);
-      if (y <= SEA + 1) return;
+    function addEnderman(x: number, z: number, explicitY?: number): MeshEntity | null {
+      const sy = explicitY !== undefined ? explicitY : surfY(world, x, z);
+      if (sy <= SEA + 1) return null;
       const g = new THREE.Group();
-      g.add(box(0.5, 0.65, 0.3, 0x2b6e6e, 0, 0.65, 0));
-      g.add(box(0.45, 0.45, 0.45, 0x4a7c3f, 0, 1.22, 0));
-      const em = new THREE.MeshBasicMaterial({ color: 0xff2222 });
-      const e1 = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.06, 0.05), em);
-      e1.position.set(-0.1, 1.26, 0.23);
-      const e2 = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.06, 0.05), em);
-      e2.position.set(0.1, 1.26, 0.23);
-      g.add(e1, e2);
-      g.add(box(0.2, 0.4, 0.55, 0x4a7c3f, -0.35, 0.85, 0.2));
-      g.add(box(0.2, 0.4, 0.55, 0x4a7c3f, 0.35, 0.85, 0.2));
-      const l1 = box(0.22, 0.35, 0.25, 0x2a2a6e, -0.12, 0.17, 0);
-      const l2 = box(0.22, 0.35, 0.25, 0x2a2a6e, 0.12, 0.17, 0);
+      const legs: THREE.Mesh[] = [];
+      const eyes: THREE.Mesh[] = [];
+      const l1 = mkBox(0.16, 1.3, 0.16, 0x111118, -0.12, 0.65, 0);
+      const l2 = mkBox(0.16, 1.3, 0.16, 0x111118, 0.12, 0.65, 0);
       g.add(l1, l2);
-      g.position.set(x, y, z);
+      legs.push(l1, l2);
+      g.add(mkBox(0.42, 0.85, 0.24, 0x111118, 0, 1.72, 0));
+      g.add(mkBox(0.42, 0.42, 0.42, 0x16161d, 0, 2.38, 0));
+      const eyeMat = new THREE.MeshBasicMaterial({ color: 0xd946ef });
+      const e1 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.05), eyeMat);
+      e1.position.set(-0.1, 2.4, 0.22);
+      const e2 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.05), eyeMat);
+      e2.position.set(0.1, 2.4, 0.22);
+      g.add(e1, e2);
+      eyes.push(e1, e2);
+      g.add(mkBox(0.14, 1.1, 0.14, 0x111118, -0.3, 1.65, 0));
+      g.add(mkBox(0.14, 1.1, 0.14, 0x111118, 0.3, 1.65, 0));
+      g.position.set(x, sy, z);
       scene.add(g);
-      ENT.push({
-        id: nextEntId++,
-        type: 'zombie',
+      const ent: MeshEntity = {
+        id: nextEntityId++,
         mesh: g,
+        legs,
+        eyes,
+        type: 'enderman',
         pos: g.position,
-        vel: { x: 0, y: 0, z: 0 },
-        state: 'chase',
-        timer: 0,
+        vel: new THREE.Vector3(),
+        state: 'idle',
+        timer: Math.random() * 4,
         windupTimer: 0,
         hitFlashTimer: 0,
         koTimer: 0,
         alive: true,
-        hp: 14,
-        maxHp: 14,
-        dir: Math.random() * 6.28,
-        tmr: 0,
-        spd: 2.3,
-        legs: [l1, l2],
-        atkCd: 0,
-      });
+        hp: 26,
+        maxHp: 26,
+      };
+      entities.push(ent);
+      return ent;
     }
 
-    // Requisito 3: La aldea empieza vacía (0 aldeanos allí).
-    // Generamos los 5 aldeanos perdidos dispersos en islas lejanas esperando rescate:
-    LOST_VILLAGER_ISLANDS.forEach((isl, idx) => {
-      addLostVillager(isl.x + 0.5, isl.z + 0.5, idx);
-    });
-
-    // Spawn fauna alrededor de la zona inicial
-    const aTypes: Array<'cow' | 'sheep' | 'chicken'> = ['cow', 'sheep', 'chicken'];
-    for (let i = 0; i < 9; i++) {
-      const ax = (Math.random() - 0.5) * 44;
-      const az = (Math.random() - 0.5) * 44;
-      addAnimal(aTypes[i % 3], ax, az);
+    // Spawn inicial de fauna en la gran isla/continente inicial: Caballos, Ovejas, Vacas, Lobos y Peces
+    for (const [hx, hz] of [
+      [5, -3],
+      [-7, 6],
+      [12, 8],
+    ]) {
+      addHorse(hx, hz);
     }
-    for (let i = 0; i < 3; i++) {
-      const wx = 8 + (Math.random() - 0.5) * 24;
-      const wz = 8 + (Math.random() - 0.5) * 24;
-      addWolf(wx, wz);
+    for (const [sx, sz] of [
+      [-4, -4],
+      [7, 2],
+      [-9, 3],
+      [10, -7],
+    ]) {
+      addAnimal('sheep', sx, sz);
     }
     for (let i = 0; i < 4; i++) {
-      const sx = 22 + Math.random() * 30;
-      const sz = 22 + Math.random() * 30;
-      addShark(sx, sz);
+      addAnimal('cow', (Math.random() - 0.5) * 28, (Math.random() - 0.5) * 28);
+      addAnimal('chicken', (Math.random() - 0.5) * 24, (Math.random() - 0.5) * 24);
+    }
+    for (let i = 0; i < 3; i++) {
+      addWolf((Math.random() - 0.5) * 32, (Math.random() - 0.5) * 32);
+    }
+    for (let i = 0; i < 8; i++) {
+      addFish(28 + Math.random() * 18, (Math.random() - 0.5) * 35);
     }
 
-    // 7. PARTICLES
-    const PARTS: ParticleData[] = [];
-    const pGeo = new THREE.BoxGeometry(0.18, 0.18, 0.18);
-
-    function spawnParts(x: number, y: number, z: number, col: number, n = 10) {
-      const m = new THREE.MeshBasicMaterial({ color: col });
-      for (let i = 0; i < n; i++) {
-        const p = new THREE.Mesh(pGeo, m);
-        p.position.set(
-          x + 0.5 + (Math.random() - 0.5) * 0.6,
-          y + 0.5 + (Math.random() - 0.5) * 0.6,
-          z + 0.5 + (Math.random() - 0.5) * 0.6
-        );
-        scene.add(p);
-        PARTS.push({
-          mesh: p,
-          vel: new THREE.Vector3(
-            (Math.random() - 0.5) * 4,
-            Math.random() * 4 + 1,
-            (Math.random() - 0.5) * 4
-          ),
-          life: 0.6 + Math.random() * 0.4,
-        });
-      }
-    }
-
-    // 8. MULTIJUGADOR ONLINE P2P CON PEERJS
-    let peerInstance: Peer | null = null;
-    const activeConnections = new Map<string, DataConnection>();
-    const remotePeers = new Map<string, RemotePeerState>();
-
-    function createRemotePlayerAvatar(peerId: string): RemotePeerState {
-      const existing = remotePeers.get(peerId);
-      if (existing) return existing;
-
-      const g = new THREE.Group();
-      // Torso cian/esmeralda de jugador online
-      g.add(box(0.52, 0.72, 0.3, 0x0ea5e9, 0, 0.72, 0));
-      // Brazos
-      g.add(box(0.18, 0.65, 0.22, 0x38bdf8, -0.36, 0.72, 0));
-      g.add(box(0.18, 0.65, 0.22, 0x38bdf8, 0.36, 0.72, 0));
-      // Cabeza
-      const head = box(0.46, 0.46, 0.46, 0xf1c27d, 0, 1.32, 0);
-      head.add(box(0.08, 0.07, 0.05, 0x111111, -0.1, 0.04, -0.24));
-      head.add(box(0.08, 0.07, 0.05, 0x111111, 0.1, 0.04, -0.24));
-      g.add(head);
-      // Piernas
-      const l1 = box(0.22, 0.38, 0.25, 0x1e293b, -0.13, 0.19, 0);
-      const l2 = box(0.22, 0.38, 0.25, 0x1e293b, 0.13, 0.19, 0);
-      g.add(l1, l2);
-
-      // Bote adjunto para cuando el jugador remoto navega
-      const { mesh: boatMesh } = createBoatMeshGroup();
-      boatMesh.position.set(0, -0.2, 0);
-      boatMesh.visible = false;
-      g.add(boatMesh);
-
-      g.position.set(SPAWN_X + 1.5, surfY(world, 1, 1), SPAWN_Z + 1.5);
-      scene.add(g);
-
-      const rp: RemotePeerState = {
-        peerId,
-        mesh: g,
-        head,
-        legs: [l1, l2],
-        boatMesh,
-        targetPos: g.position.clone(),
-        yaw: 0,
-        pitch: 0,
-        inBoat: false,
-        lastSeen: performance.now(),
-      };
-      remotePeers.set(peerId, rp);
-      return rp;
-    }
-
-    function removeRemotePlayerAvatar(peerId: string) {
-      const rp = remotePeers.get(peerId);
-      if (rp) {
-        scene.remove(rp.mesh);
-        remotePeers.delete(peerId);
-      }
-    }
-
-    function broadcastNetMessage(msg: NetMessage, excludePeerId?: string) {
-      for (const [pid, conn] of activeConnections.entries()) {
-        if (pid !== excludePeerId && conn.open) {
-          try {
-            conn.send(msg);
-          } catch {
-            // Ignore transient send error
-          }
-        }
-      }
-    }
-
-    function handleIncomingNetMessage(msg: NetMessage, fromPeerId: string) {
-      if (!msg || typeof msg !== 'object') return;
-      if (msg.type === 'player:move') {
-        const rp = createRemotePlayerAvatar(msg.peerId || fromPeerId);
-        rp.targetPos.set(msg.x, msg.y - 0.1, msg.z);
-        rp.yaw = msg.yaw;
-        rp.pitch = msg.pitch;
-        rp.inBoat = msg.inBoat;
-        rp.boatMesh.visible = msg.inBoat;
-        rp.lastSeen = performance.now();
-        // Si somos el Host, reenviar a otros invitados
-        broadcastNetMessage(msg, fromPeerId);
-      } else if (msg.type === 'block:set') {
-        // Idempotent block mutation
-        if (gB(world, msg.x, msg.y, msg.z) !== msg.t) {
-          sB(world, msg.x, msg.y, msg.z, msg.t);
-          rebuildMeshes(PL1.pos.x, PL1.pos.z);
-        }
-        broadcastNetMessage(msg, fromPeerId);
-      } else if (msg.type === 'villager:rescued') {
-        const v = ENT.find((e) => e.id === msg.villagerId && e.type === 'villager');
-        if (v && !v.rescued) {
-          v.inBoat = false;
-          v.rescued = true;
-          v.mesh.visible = true;
-          if (v.beacon) v.beacon.visible = false;
-          v.pos.x = VX + 8 + (msg.rescuedCount % 4) * 2;
-          v.pos.y = SEA + 3;
-          v.pos.z = VZ + 8;
-          v.home = { x: v.pos.x, z: v.pos.z };
-        }
-        PL1.villagersRescued = Math.max(PL1.villagersRescued, msg.rescuedCount);
-        setVillagersRescued(PL1.villagersRescued);
-        showToast(`🤝 ¡Tu compañero rescató a un aldeano! (${PL1.villagersRescued}/${TOTAL_VILLAGERS_TO_RESCUE})`);
-        broadcastNetMessage(msg, fromPeerId);
-      } else if (msg.type === 'init:state') {
-        for (const [key, val] of msg.modifiedBlocks) {
-          const [sx, sy, sz] = key.split(',').map(Number);
-          sB(world, sx, sy, sz, val);
-        }
-        for (const vid of msg.rescuedVillagerIds) {
-          const v = ENT.find((e) => e.id === vid && e.type === 'villager');
-          if (v) {
-            v.inBoat = false;
-            v.rescued = true;
-            if (v.beacon) v.beacon.visible = false;
-            v.pos.x = VX + 8;
-            v.pos.y = SEA + 3;
-            v.pos.z = VZ + 8;
-            v.home = { x: v.pos.x, z: v.pos.z };
-          }
-        }
-        PL1.villagersRescued = Math.max(PL1.villagersRescued, msg.rescuedCount);
-        setVillagersRescued(PL1.villagersRescued);
-        rebuildMeshes(PL1.pos.x, PL1.pos.z);
-      }
-    }
-
-    function wireDataConnection(conn: DataConnection) {
-      conn.on('open', () => {
-        activeConnections.set(conn.peer, conn);
-        setConnectedPeersCount(activeConnections.size);
-        setNetStatus(`Conectado (${activeConnections.size} jugador${activeConnections.size === 1 ? '' : 'es'})`);
-        createRemotePlayerAvatar(conn.peer);
-        showToast('🌐 ¡Jugador conectado a la sala multijugador!', 3000);
-
-        // Enviar estado actual del mundo de forma idempotente
-        const rescuedIds = ENT.filter((e) => e.type === 'villager' && e.rescued).map((e) => e.id);
-        const initMsg: NetMessage = {
-          type: 'init:state',
-          modifiedBlocks: Array.from(world.modified.entries()),
-          rescuedVillagerIds: rescuedIds,
-          rescuedCount: PL1.villagersRescued,
-        };
-        conn.send(initMsg);
-      });
-
-      conn.on('data', (raw) => {
-        handleIncomingNetMessage(raw as NetMessage, conn.peer);
-      });
-
-      conn.on('close', () => {
-        activeConnections.delete(conn.peer);
-        removeRemotePlayerAvatar(conn.peer);
-        setConnectedPeersCount(activeConnections.size);
-        setNetStatus(
-          activeConnections.size > 0
-            ? `Conectado (${activeConnections.size})`
-            : 'Sala activa (esperando jugadores)'
-        );
-      });
-
-      conn.on('error', () => {
-        activeConnections.delete(conn.peer);
-        removeRemotePlayerAvatar(conn.peer);
-        setConnectedPeersCount(activeConnections.size);
-      });
-    }
-
-    const createMultiplayerRoom = (): string => {
-      if (peerInstance) {
-        peerInstance.destroy();
-        peerInstance = null;
-      }
-      const code = generateRoomCode();
-      setRoomCode(code);
-      setRoomMode('created');
-      setNetStatus('Creando sala P2P...');
-
-      try {
-        const peer = new Peer(`${PEER_PREFIX}${code}`);
-        peerInstance = peer;
-
-        peer.on('open', () => {
-          setNetStatus(`Sala ${code} lista (Esperando amigo)`);
-          showToast(`📡 Sala creada: Código ${code} — Compártelo para jugar juntos`, 3500);
-        });
-
-        peer.on('connection', (conn) => {
-          wireDataConnection(conn);
-        });
-
-        peer.on('error', (err) => {
-          setNetStatus(`Sala local ${code} (${err.type || 'P2P'})`);
-        });
-      } catch {
-        setNetStatus(`Sala ${code} preparada`);
-      }
-      return code;
-    };
-
-    const joinMultiplayerRoom = (rawCode: string) => {
-      const code = normalizeRoomCode(rawCode);
-      if (code.length < 4) {
-        showToast('⚠️ Escribe un código de sala válido de 4 o 5 letras/números', 2600);
-        return;
-      }
-      if (peerInstance) {
-        peerInstance.destroy();
-        peerInstance = null;
-      }
-      setRoomCode(code);
-      setRoomMode('connected');
-      setNetStatus(`Conectando a sala ${code}...`);
-
-      try {
-        const peer = new Peer();
-        peerInstance = peer;
-
-        peer.on('open', () => {
-          const conn = peer.connect(`${PEER_PREFIX}${code}`, { reliable: true });
-          wireDataConnection(conn);
-        });
-
-        peer.on('connection', (conn) => {
-          wireDataConnection(conn);
-        });
-
-        peer.on('error', () => {
-          setNetStatus(`No se encontró la sala ${code} o sin red P2P`);
-          showToast(`⚠️ No se pudo conectar a la sala ${code}. Verifica el código.`, 3000);
-        });
-      } catch {
-        setNetStatus(`Error al conectar a ${code}`);
-      }
-    };
-
-    // 9. CONTROLS: POINTER LOCK, CRAFTING, BOATS, VILLAGER RESCUE & TOUCH
+    // ─── CONTROLES POINTER LOCK & TECLADO ─────────────────────────────
     const keys: Record<string, boolean> = {};
     let jumpJustPressed = false;
     let jumpJustReleased = false;
-
-    const selectHotbarSlot = (idx: number) => {
-      PL1.si = ((idx % HOTBAR_SIZE) + HOTBAR_SIZE) % HOTBAR_SIZE;
-      setSelectedSlot(PL1.si);
-    };
-
-    const craftPlanks = () => {
-      const res = craftWoodToPlanksLogic(PL1);
-      if (res.crafted) {
-        soundEngine.playCraft();
-        syncInventoryUI(PL1);
-        showToast('🔨 ¡Crafteado! +4 Tablones de madera listos para construir o hacer un Bote', 2600);
-      } else {
-        showToast('🌲 Necesitas al menos 1 bloque de Madera (tala un árbol cercano)', 2600);
-      }
-    };
-
-    const craftDoor = () => {
-      const res = craftPlanksToDoorLogic(PL1);
-      if (res.crafted) {
-        soundEngine.playCraft();
-        syncInventoryUI(PL1);
-        showToast('🚪 ¡Crafteado! +1 Puerta lista en tu inventario', 2400);
-      } else {
-        showToast('🪵 Necesitas al menos 2 Tablones para fabricar una Puerta', 2400);
-      }
-    };
-
-    const craftBoat = () => {
-      const res = craftPlanksToBoatLogic(PL1);
-      if (res.crafted) {
-        soundEngine.playCraft();
-        syncInventoryUI(PL1);
-        showToast('⛵ ¡Bote fabricado! Acércate al mar y haz clic derecho en el agua para colocarlo', 3200);
-      } else {
-        showToast(
-          `🪵 Necesitas 5 Tablones para fabricar un Bote (tienes ${res.planksRemaining}/5)`,
-          2800
-        );
-      }
-    };
-
-    const getActiveBoat = (): ThreeBoat | null => {
-      if (!PL1.inBoat || PL1.activeBoatId === null) return null;
-      return BOATS.find((b) => b.id === PL1.activeBoatId) || null;
-    };
-
-    const rescueInteract = (): boolean => {
-      const activeBoat = getActiveBoat();
-      const res = interactVillagerRescueLogic(PL1, activeBoat, ENT);
-      if (res.action === 'boarded' && res.villager && activeBoat) {
-        const vEnt = ENT.find((e) => e.id === res.villager!.id);
-        if (vEnt) {
-          vEnt.mesh.visible = false; // El aldeano ahora va sentado dentro del bote
-        }
-        activeBoat.passengerMesh.visible = true;
-        soundEngine.playTame();
-        syncInventoryUI(PL1);
-        showToast(
-          '🛟 ¡Aldeano a bordo del bote! Navega hasta la Aldea Lejana (SE) y haz clic para rescatarlo.',
-          4000
-        );
-        return true;
-      }
-      if (res.action === 'rescued' && activeBoat) {
-        activeBoat.passengerMesh.visible = false;
-        if (res.villager) {
-          const vEnt = ENT.find((e) => e.id === res.villager!.id);
-          if (vEnt) {
-            vEnt.mesh.visible = true;
-            vEnt.mesh.position.set(vEnt.pos.x, vEnt.pos.y, vEnt.pos.z);
-            vEnt.home = { x: vEnt.pos.x, z: vEnt.pos.z };
-            if (vEnt.beacon) vEnt.beacon.visible = false;
-            spawnParts(vEnt.pos.x, vEnt.pos.y + 1, vEnt.pos.z, 0x4ade80, 22);
-          }
-          broadcastNetMessage({
-            type: 'villager:rescued',
-            villagerId: res.villager.id,
-            rescuedCount: PL1.villagersRescued,
-          });
-        }
-        soundEngine.playTame();
-        syncInventoryUI(PL1);
-        showToast(
-          `🎉 ¡Aldeano rescatado en la Aldea! (${PL1.villagersRescued}/${TOTAL_VILLAGERS_TO_RESCUE})`,
-          4200
-        );
-        return true;
-      }
-      return false;
-    };
-
-    const useOrMountBoat = (): boolean => {
-      // 1. Si ya estamos en el bote, primero comprobar si podemos rescatar/entregar un aldeano
-      if (PL1.inBoat) {
-        if (rescueInteract()) return true;
-        // Si no hay rescate inmediato, bajarse del bote
-        dismountBoatLogic(world, PL1);
-        syncInventoryUI(PL1);
-        showToast('⚓ Has bajado del bote.', 2000);
-        return true;
-      }
-
-      // 2. Si hay un bote colocado cerca, subirse a él
-      let closestBoat: ThreeBoat | null = null;
-      let bestDist = 5.5;
-      for (const b of BOATS) {
-        const d = Math.hypot(b.pos.x - PL1.pos.x, b.pos.z - PL1.pos.z);
-        if (d < bestDist) {
-          bestDist = d;
-          closestBoat = b;
-        }
-      }
-      if (closestBoat && mountBoatLogic(PL1, closestBoat)) {
-        soundEngine.playPlace();
-        syncInventoryUI(PL1);
-        showToast('⛵ ¡Subiste al Bote! Usa WASD o el Joystick para navegar rápido por el mar.', 3200);
-        return true;
-      }
-
-      // 3. Si tenemos un Bote en el inventario, colocarlo en el agua y subir
-      if (countItemInInventory(PL1, BT.BOAT) > 0) {
-        const look = getLookDir();
-        const targetX = PL1.pos.x + look.x * 3.0;
-        const targetZ = PL1.pos.z + look.z * 3.0;
-        const res = placeBoatInWaterLogic(world, PL1, [], targetX, targetZ, nextBoatId++);
-        if (res.placed && res.boat) {
-          const tb = spawnBoatMesh(res.boat);
-          mountBoatLogic(PL1, tb);
-          soundEngine.playPlace();
-          syncInventoryUI(PL1);
-          showToast('⛵ ¡Bote colocado en el mar! Navega hacia las islas para rescatar aldeanos.', 3500);
-          return true;
-        } else {
-          showToast('💧 Acércate a la orilla del mar y apunta al agua para colocar tu Bote.', 2800);
-          return true;
-        }
-      }
-
-      return false;
-    };
-
-    const swapSlots = (idxA: number, idxB: number) => {
-      swapInventorySlots(PL1, idxA, idxB);
-      syncInventoryUI(PL1);
-    };
-
-    const requestPointerLock = () => {
-      soundEngine.unlock();
-      setInventoryOpen(false);
-      setGameState('playing');
-      if (!isTouchDeviceRef.current) {
-        try {
-          renderer.domElement.requestPointerLock();
-        } catch {
-          // Ignore pointer lock rejection in headless/mobile
-        }
-      }
-    };
-
-    const respawnPlayer = () => {
-      const sy = surfY(world, 0, 0) + 1;
-      PL1.pos = { x: SPAWN_X, y: sy, z: SPAWN_Z };
-      PL1.vel = { x: 0, y: 0, z: 0 };
-      PL1.hp = 20;
-      PL1.inBoat = false;
-      PL1.activeBoatId = null;
-      setHp(20);
-      syncInventoryUI(PL1);
-      requestPointerLock();
-    };
-
-    let dayTime = 0.28;
-
-    const toggleTimeOfDay = () => {
-      if (isNightTime(dayTime)) {
-        dayTime = 0.3;
-        showToast('☀️ Amanecer: Zombies, Arañas y Endermans desaparecen con la luz del sol', 2600);
-      } else {
-        dayTime = 0.85;
-        showToast('🌙 Noche cerrada: ¡Cuidado con los Zombies y las nuevas Arañas saltadoras!', 2800);
-      }
-      setDayPhase(getDayPhaseLabel(dayTime));
-      setIsNightUI(isNightTime(dayTime));
-    };
-
-    function getLookDir() {
-      return new THREE.Vector3(
-        -Math.sin(yaw) * Math.cos(pitch),
-        Math.sin(pitch),
-        -Math.cos(yaw) * Math.cos(pitch)
-      ).normalize();
-    }
-
-    function hurtPlayer(p: PlayerState, dmg: number) {
-      if (p.invul > 0) return;
-      p.hp = Math.max(0, p.hp - dmg);
-      p.invul = 0.6;
-      soundEngine.playHurt();
-      setHp(p.hp);
-      if (p.hp <= 0) {
-        if (document.pointerLockElement === renderer.domElement) {
-          document.exitPointerLock();
-        }
-        setGameState('gameover');
-      }
-    }
-
-    function attackCheck(p: PlayerState) {
-      // Si el jugador hace clic sobre un aldeano perdido o en la aldea estando en bote, priorizar rescate
-      if (p.inBoat && rescueInteract()) {
-        return true;
-      }
-
-      const eye = new THREE.Vector3(p.pos.x, p.pos.y + p.eyeH, p.pos.z);
-      const dir = getLookDir();
-      for (let i = ENT.length - 1; i >= 0; i--) {
-        const e = ENT[i];
-        if (e.type === 'villager') {
-          const ec = new THREE.Vector3(e.pos.x, e.pos.y + 0.9, e.pos.z);
-          const toE = ec.clone().sub(eye);
-          if (toE.length() < 5.5 && toE.normalize().dot(dir) > 0.65) {
-            if (p.inBoat) {
-              rescueInteract();
-            } else if (!e.rescued) {
-              showToast('🛟 ¡Aldeano encontrado! Trae un Bote (5 Tablones) por el agua y haz clic para subirlo.', 3200);
-            }
-            return true;
-          }
-          continue;
-        }
-
-        const ec = new THREE.Vector3(
-          e.pos.x,
-          e.pos.y + (e.type === 'enderman' ? 1.4 : e.type === 'spider' ? 0.35 : 0.7),
-          e.pos.z
-        );
-        const toE = ec.clone().sub(eye);
-        const dist = toE.length();
-        if (dist < 4.2 && toE.normalize().dot(dir) > 0.72) {
-          if (
-            !hasLineOfSight(
-              world,
-              p.pos,
-              e.pos,
-              p.eyeH,
-              e.type === 'enderman' ? 1.4 : e.type === 'spider' ? 0.35 : 0.7
-            )
-          ) {
-            continue;
-          }
-          e.hp -= 5;
-          e.vel.x = dir.x * 7;
-          e.vel.z = dir.z * 7;
-          e.vel.y = 4;
-          if (e.type === 'wolf') {
-            e.angry = true;
-            e.tamed = false;
-            if (e.collar) e.collar.visible = false;
-            if (e.eyeMat) e.eyeMat.color.setHex(0xff2222);
-          }
-          if (e.type === 'enderman') e.angry = true;
-          spawnParts(e.pos.x - 0.5, e.pos.y + 0.5, e.pos.z - 0.5, 0xff3333, 12);
-          soundEngine.playHit();
-          if (e.hp <= 0) {
-            e.alive = false;
-            scene.remove(e.mesh);
-            ENT.splice(i, 1);
-            spawnParts(e.pos.x - 0.5, e.pos.y + 0.5, e.pos.z - 0.5, 0xffffff, 18);
-          }
-          return true;
-        }
-      }
-      return false;
-    }
-
-    function breakBlock(p: PlayerState) {
-      soundEngine.playSwing();
-      if (attackCheck(p)) return;
-      const hit = raycastBlock(world, p.pos, p.eyeH, yaw, pitch);
-      if (hit) {
-        const res = breakBlockLogic(world, p, hit.bx, hit.by, hit.bz);
-        if (res.broken && res.oldType) {
-          const def = BD[res.oldType];
-          spawnParts(hit.bx, hit.by, hit.bz, def ? def.c : 0xaaaaaa, 12);
-          soundEngine.playBreak();
-          syncInventoryUI(p);
-          rebuildMeshes(p.pos.x, p.pos.z);
-
-          // Sincronizar con otros jugadores vía PeerJS
-          broadcastNetMessage({
-            type: 'block:set',
-            x: hit.bx,
-            y: hit.by,
-            z: hit.bz,
-            t: BT.AIR,
-          });
-
-          if (res.collected && def) {
-            if (res.oldType === BT.WOOD) {
-              showToast(
-                '🪵 +1 Madera — Pulsa [C] para hacer 4 Tablones (con 5 Tablones fabricas un Bote [B])',
-                3000
-              );
-            } else {
-              showToast(`🎒 +1 ${def.n} guardado en tu inventario`, 1800);
-            }
-          }
-        }
-      }
-    }
-
-    function placeBlock(p: PlayerState) {
-      // 1. Si estamos en bote y hacemos clic derecho, comprobar rescate de aldeano primero
-      if (p.inBoat && rescueInteract()) {
-        return;
-      }
-
-      // 2. Comprobar si estamos mirando un bote cercano para subirnos
-      const eye = new THREE.Vector3(p.pos.x, p.pos.y + p.eyeH, p.pos.z);
-      const dir = getLookDir();
-      if (!p.inBoat) {
-        for (const b of BOATS) {
-          const bc = new THREE.Vector3(b.pos.x, b.pos.y + 0.2, b.pos.z);
-          const toB = bc.sub(eye);
-          if (toB.length() < 5.0 && toB.normalize().dot(dir) > 0.65) {
-            if (mountBoatLogic(p, b)) {
-              soundEngine.playPlace();
-              syncInventoryUI(p);
-              showToast('⛵ ¡Subiste al Bote! Navega hacia las islas para rescatar aldeanos.', 3000);
-              return;
-            }
-          }
-        }
-      }
-
-      // 3. Domesticar lobo si miramos a un lobo
-      for (const e of ENT) {
-        if (e.type === 'wolf' && !e.tamed) {
-          const ec = new THREE.Vector3(e.pos.x, e.pos.y + 0.5, e.pos.z);
-          const toE = ec.sub(eye);
-          if (toE.length() < 3.8 && toE.normalize().dot(dir) > 0.75) {
-            e.tamed = true;
-            e.angry = false;
-            e.owner = p;
-            if (e.collar) e.collar.visible = true;
-            if (e.eyeMat) e.eyeMat.color.setHex(0x222222);
-            spawnParts(e.pos.x - 0.5, e.pos.y + 0.6, e.pos.z - 0.5, 0xff3366, 15);
-            soundEngine.playTame();
-            showToast('🐺 ¡Lobo domesticado! Ahora te acompañará y defenderá.');
-            return;
-          }
-        }
-      }
-
-      // 4. Si el ítem seleccionado en la mano es un Bote (BT.BOAT), colocarlo en el agua
-      const currentSlot = p.inventory[p.si];
-      if (currentSlot && currentSlot.type === BT.BOAT && currentSlot.count > 0) {
-        useOrMountBoat();
-        return;
-      }
-
-      const hit = raycastBlock(world, p.pos, p.eyeH, yaw, pitch);
-      if (!hit) return;
-
-      const b = gB(world, hit.bx, hit.by, hit.bz);
-      if (b === BT.TABLE) {
-        craftPlanks();
-        return;
-      }
-      if (b === BT.BED) {
-        dayTime = 0.28;
-        p.hp = 20;
-        setHp(20);
-        spawnParts(hit.bx, hit.by + 1, hit.bz, 0x55ff88, 20);
-        showToast('🛏️ ¡Has dormido! Es de día y tu vida está al máximo.');
-        return;
-      }
-
-      if (!currentSlot || currentSlot.count <= 0) {
-        showToast('⛏️ Ranura vacía: Rompe bloques (clic izq.) o craftea tablones [C] / bote [B]', 2500);
-        return;
-      }
-
-      const res = placeBlockLogic(world, p, hit.bx, hit.by, hit.bz, hit.nx, hit.ny, hit.nz);
-      if (res.placed) {
-        soundEngine.playPlace();
-        syncInventoryUI(p);
-        rebuildMeshes(p.pos.x, p.pos.z);
-
-        broadcastNetMessage({
-          type: 'block:set',
-          x: res.tx,
-          y: res.ty,
-          z: res.tz,
-          t: res.blockType,
-        });
-      }
-    }
-
-    actionsRef.current = {
-      requestPointerLock,
-      respawnPlayer,
-      selectHotbarSlot,
-      craftPlanks,
-      craftDoor,
-      craftBoat,
-      useOrMountBoat,
-      rescueInteract,
-      swapSlots,
-      toggleTimeOfDay,
-      createMultiplayerRoom,
-      joinMultiplayerRoom,
-      triggerAttackOrBreak: () => breakBlock(PL1),
-      triggerPlaceOrInteract: () => placeBlock(PL1),
-      triggerJump: () => {
-        jumpJustPressed = true;
-      },
-      rotateCameraBy: (dYaw: number, dPitch: number) => {
-        yaw -= dYaw;
-        pitch = Math.max(-1.48, Math.min(1.48, pitch - dPitch));
-      },
-    };
-
-    const onPointerLockChange = () => {
-      const locked = document.pointerLockElement === renderer.domElement;
-      setPointerLocked(locked);
-      if (locked) {
-        setGameState('playing');
-        setInventoryOpen(false);
-      }
-    };
+    let pointerLocked = false;
+    let inventoryOpenLocal = false;
+    let craftingTableOpenLocal = false;
+    let chatOpenLocal = false;
+    let wolfModalOpenLocal = false;
+    let localWalkPhase = 0;
 
     const onKeyDown = (e: KeyboardEvent) => {
-      // No interceptar teclas si el jugador está escribiendo el código de sala en el input
-      if (
-        document.activeElement &&
-        (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')
-      ) {
+      if (wolfModalOpenLocal || chatOpenLocal) {
+        if (e.code === 'Escape' && chatOpenLocal) {
+          chatOpenLocal = false;
+          setIsChatOpen(false);
+        }
         return;
       }
 
-      if (e.code === 'Space' && !keys['Space']) {
+      // Requisito 1: Tecla T abre el input de chat en vivo
+      if (e.code === 'KeyT' && !inventoryOpenLocal && !craftingTableOpenLocal) {
+        e.preventDefault();
+        chatOpenLocal = true;
+        setIsChatOpen(true);
+        if (document.pointerLockElement) {
+          document.exitPointerLock();
+        }
+        return;
+      }
+
+      if (e.code === 'KeyE') {
+        e.preventDefault();
+        ensureAudio();
+        if (craftingTableOpenLocal) {
+          craftingTableOpenLocal = false;
+          setIsCraftingTableOpen(false);
+          renderer.domElement.requestPointerLock?.();
+          return;
+        }
+        inventoryOpenLocal = !inventoryOpenLocal;
+        setIsInventoryOpen(inventoryOpenLocal);
+        setSelectedSwapSlot(null);
+        if (inventoryOpenLocal) {
+          if (document.pointerLockElement) document.exitPointerLock();
+        } else {
+          renderer.domElement.requestPointerLock?.();
+        }
+        return;
+      }
+
+      if (e.code === 'KeyC') {
+        e.preventDefault();
+        ensureAudio();
+        actionsRef.current?.craftPlanks();
+        return;
+      }
+
+      if (e.code === 'KeyB') {
+        e.preventDefault();
+        ensureAudio();
+        actionsRef.current?.craftBoat();
+        return;
+      }
+
+      if (e.code === 'KeyX' && (PL1.inBoat || PL1.mountedHorseId !== null)) {
+        e.preventDefault();
+        if (PL1.inBoat) {
+          dismountBoatLogic(world, PL1);
+          showMsg('🚶 Bajaste del bote.');
+        } else if (PL1.mountedHorseId !== null) {
+          const horse = entities.find((en) => en.id === PL1.mountedHorseId);
+          if (horse) toggleMountHorseLogic(PL1, horse);
+          showMsg('🐎 Desmontaste del caballo.');
+        }
+        return;
+      }
+
+      if (!keys[e.code] && e.code === 'Space') {
         jumpJustPressed = true;
       }
       keys[e.code] = true;
+
       if (e.code.startsWith('Digit')) {
-        const n = parseInt(e.code[5], 10) - 1;
+        const n = parseInt(e.code.slice(5), 10) - 1;
         if (n >= 0 && n < HOTBAR_SIZE) {
-          selectHotbarSlot(n);
+          PL1.si = n;
+          buildHotbar();
         }
-      }
-      if (e.code === 'KeyC' && gameStateRef.current === 'playing') {
-        craftPlanks();
-      }
-      if (e.code === 'KeyV' && gameStateRef.current === 'playing') {
-        craftDoor();
-      }
-      if (e.code === 'KeyB' && gameStateRef.current === 'playing') {
-        craftBoat();
-      }
-      if (e.code === 'KeyF' && gameStateRef.current === 'playing') {
-        useOrMountBoat();
-      }
-      if (e.code === 'KeyR' && gameStateRef.current === 'playing') {
-        rescueInteract();
-      }
-      if (e.code === 'KeyN' && gameStateRef.current === 'playing') {
-        toggleTimeOfDay();
-      }
-      if (e.code === 'KeyI' || e.code === 'KeyE') {
-        if (gameStateRef.current === 'playing' || inventoryOpenRef.current) {
-          const nextOpen = !inventoryOpenRef.current;
-          setInventoryOpen(nextOpen);
-          if (nextOpen && document.pointerLockElement === renderer.domElement) {
-            document.exitPointerLock();
-          }
-        }
-      }
-      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
-        e.preventDefault();
       }
     };
 
@@ -1874,1393 +1599,2212 @@ export default function App() {
       keys[e.code] = false;
     };
 
-    const onMouseMove = (e: MouseEvent) => {
-      if (document.pointerLockElement === renderer.domElement) {
-        yaw -= e.movementX * 0.0024;
-        pitch = Math.max(-1.48, Math.min(1.48, pitch - e.movementY * 0.0024));
-      }
-    };
-
-    const onMouseDown = (e: MouseEvent) => {
-      if (gameStateRef.current !== 'playing' || inventoryOpenRef.current || showCodeModalRef.current) return;
-      if (isTouchDeviceRef.current) return;
-      if (document.pointerLockElement !== renderer.domElement) {
-        requestPointerLock();
-        return;
-      }
-      if (e.button === 0) breakBlock(PL1);
-      if (e.button === 2) placeBlock(PL1);
-    };
-
-    const onWheel = (e: WheelEvent) => {
-      if (gameStateRef.current !== 'playing' || inventoryOpenRef.current) return;
-      selectHotbarSlot(PL1.si + (e.deltaY > 0 ? 1 : -1));
-    };
-
-    const onContextMenu = (e: MouseEvent) => e.preventDefault();
-
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('mousemove', onMouseMove);
-    renderer.domElement.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('wheel', onWheel);
-    window.addEventListener('contextmenu', onContextMenu);
+
+    const onPointerLockChange = () => {
+      pointerLocked = document.pointerLockElement === renderer.domElement;
+      if (!pointerLocked && !wolfModalOpenLocal && !inventoryOpenLocal && !craftingTableOpenLocal && !chatOpenLocal && !touchDetected) {
+        setIsPlaying(false);
+      } else if (pointerLocked) {
+        setIsPlaying(true);
+        setHasStartedOnce(true);
+      }
+    };
     document.addEventListener('pointerlockchange', onPointerLockChange);
 
-    // 10. PHYSICS & AI LOOP (Spiders, Zombies, Ultra-rare Endermans, Lost Villagers)
-    let zSpawnTmr = 2;
-    let sSpawnTmr = 2.5;
-    let enderSpawnTmr = 60;
-
-    function updateCameraAndHighlight(p: PlayerState) {
-      cam1.position.set(p.pos.x, p.pos.y + p.eyeH, p.pos.z);
-      const euler = new THREE.Euler(pitch, yaw, 0, 'YXZ');
-      cam1.quaternion.setFromEuler(euler);
-
-      const hit = raycastBlock(world, p.pos, p.eyeH, yaw, pitch);
-      if (hit) {
-        hlBox.position.set(hit.bx + 0.5, hit.by + 0.5, hit.bz + 0.5);
-        hlBox.visible = true;
-      } else {
-        hlBox.visible = false;
-      }
-    }
-
-    function aiEnts(dt: number, t: number) {
-      const night = isNightTime(dayTime);
-
-      // 1) Regla del Día y la Noche: Al hacerse de día, Zombies, Arañas y Endermans desaparecen inmediatamente
-      const despawned = despawnDaytimeMonsters(ENT, dayTime);
-      if (despawned.length > 0) {
-        for (let i = ENT.length - 1; i >= 0; i--) {
-          if (!ENT[i].alive) {
-            const m = ENT[i];
-            scene.remove(m.mesh);
-            spawnParts(m.pos.x - 0.5, m.pos.y + 0.6, m.pos.z - 0.5, 0xffaa33, 12);
-            ENT.splice(i, 1);
-          }
-        }
-      }
-
-      // 2) Spawn constante nocturno de Zombies y Arañas, y probabilidad mínima de Enderman
-      if (night) {
-        zSpawnTmr -= dt;
-        const zCnt = ENT.filter((e) => e.type === 'zombie').length;
-        if (zSpawnTmr <= 0 && zCnt < MAX_ZOMBIES) {
-          zSpawnTmr = 4.2 + Math.random() * 3.2;
-          const ang = Math.random() * 6.28;
-          const dist = 15 + Math.random() * 14;
-          addZombie(PL1.pos.x + Math.cos(ang) * dist, PL1.pos.z + Math.sin(ang) * dist);
-        }
-
-        sSpawnTmr -= dt;
-        const sCnt = ENT.filter((e) => e.type === 'spider').length;
-        if (sSpawnTmr <= 0 && sCnt < MAX_SPIDERS) {
-          sSpawnTmr = 4.5 + Math.random() * 3.5;
-          const ang = Math.random() * 6.28;
-          const dist = 14 + Math.random() * 14;
-          addSpider(PL1.pos.x + Math.cos(ang) * dist, PL1.pos.z + Math.sin(ang) * dist);
-        }
-
-        enderSpawnTmr -= dt;
-        const enderCnt = ENT.filter((e) => e.type === 'enderman').length;
-        if (enderSpawnTmr <= 0 && enderCnt < MAX_ENDERMEN) {
-          enderSpawnTmr = 65 + Math.random() * 45;
-          if (Math.random() < ENDERMAN_SPAWN_CHANCE) {
-            const ang = Math.random() * 6.28;
-            const dist = 24 + Math.random() * 16;
-            addEnderman(PL1.pos.x + Math.cos(ang) * dist, PL1.pos.z + Math.sin(ang) * dist);
-          }
-        }
-      }
-
-      // 3) IA de Entidades y Línea de Visión
-      for (const e of ENT) {
-        if (e.inBoat) continue;
-
-        e.tmr -= dt;
-        if (e.atkCd > 0) e.atkCd -= dt;
-        if (e.tpCd !== undefined && e.tpCd > 0) e.tpCd -= dt;
-        if (e.jumpCd !== undefined && e.jumpCd > 0) e.jumpCd -= dt;
-
-        const { pl: targetPlayer } = nearestPlayer(e.pos, PL1);
-        const dxP = targetPlayer.pos.x - e.pos.x;
-        const dzP = targetPlayer.pos.z - e.pos.z;
-        const distP = Math.hypot(dxP, dzP);
-
-        // Aldeanos perdidos esperan quietos hasta ser rescatados
-        if (e.type === 'villager' && !e.rescued) {
-          e.vel.x = 0;
-          e.vel.z = 0;
-          // Mirar hacia el jugador cuando se acerca y hacer flotar su marcador dorado
-          if (distP < 18) {
-            e.dir = Math.atan2(dxP, dzP);
-            e.mesh.rotation.y = e.dir;
-          }
-          if (e.beacon) {
-            e.beacon.position.y = 2.2 + Math.sin(t * 4 + e.id) * 0.18;
-            e.beacon.rotation.y = t * 2.2;
-          }
-          stepEntityMovementWithCollision(world, e, dt);
-          e.mesh.position.set(e.pos.x, e.pos.y, e.pos.z);
-          continue;
-        }
-
-        if (e.type === 'shark') {
-          if (distP < 18 && targetPlayer.pos.y <= SEA + 1.5 && !targetPlayer.inBoat) {
-            e.dir = Math.atan2(dxP, dzP);
-            e.vel.x = Math.sin(e.dir) * e.spd * 1.35;
-            e.vel.z = Math.cos(e.dir) * e.spd * 1.35;
-            if (
-              distP < 1.8 &&
-              e.atkCd <= 0 &&
-              hasLineOfSight(world, e.pos, targetPlayer.pos, 0.2, PH * 0.5)
-            ) {
-              hurtPlayer(targetPlayer, 4);
-              e.atkCd = 1.1;
-            }
-          } else if (e.tmr <= 0) {
-            e.tmr = 2 + Math.random() * 3;
-            e.dir += (Math.random() - 0.5) * 2.2;
-            e.vel.x = Math.sin(e.dir) * e.spd * 0.6;
-            e.vel.z = Math.cos(e.dir) * e.spd * 0.6;
-          }
-          const nx = e.pos.x + e.vel.x * dt;
-          const nz = e.pos.z + e.vel.z * dt;
-          const sy = surfY(world, nx | 0, nz | 0);
-          if (sy <= SEA - 1) {
-            e.pos.x = nx;
-            e.pos.z = nz;
-          } else {
-            e.dir += Math.PI * 0.8;
-            e.vel.x = Math.sin(e.dir) * e.spd;
-            e.vel.z = Math.cos(e.dir) * e.spd;
-          }
-          e.pos.y = SEA - 0.35 + Math.sin(t * 3 + e.dir) * 0.08;
-          e.mesh.rotation.y = e.dir;
-          if (e.legs[0]) e.legs[0].rotation.y = Math.sin(t * 10) * 0.35;
-          continue;
-        }
-
-        if (e.type === 'spider') {
-          // Nueva Araña: rápida, salta hacia el jugador y respeta estrictamente la Línea de Visión
-          const canSee = hasLineOfSight(world, e.pos, targetPlayer.pos, 0.45, PH * 0.7);
-          if (distP < 25 && canSee) {
-            e.dir = Math.atan2(dxP, dzP);
-            e.vel.x = Math.sin(e.dir) * e.spd;
-            e.vel.z = Math.cos(e.dir) * e.spd;
-
-            // Pequeños saltos ágiles al acercarse
-            if (distP > 2.0 && distP < 10.0 && (e.jumpCd ?? 0) <= 0 && e.vel.y === 0) {
-              e.vel.y = 5.2;
-              e.jumpCd = 1.6 + Math.random() * 1.2;
-            }
-
-            if (distP < 1.65 && Math.abs(targetPlayer.pos.y - e.pos.y) < 1.6 && e.atkCd <= 0) {
-              hurtPlayer(targetPlayer, 2);
-              e.atkCd = 0.85;
-            }
-          } else if (e.tmr <= 0) {
-            e.tmr = 1.2 + Math.random() * 1.8;
-            e.dir = Math.random() * 6.28;
-            e.vel.x = Math.sin(e.dir) * e.spd * 0.45;
-            e.vel.z = Math.cos(e.dir) * e.spd * 0.45;
-          }
-        } else if (e.type === 'zombie') {
-          const canSee = hasLineOfSight(world, e.pos, targetPlayer.pos, 1.2, PH * 0.75);
-          if (distP < 24 && canSee) {
-            e.dir = Math.atan2(dxP, dzP);
-            e.vel.x = Math.sin(e.dir) * e.spd;
-            e.vel.z = Math.cos(e.dir) * e.spd;
-            if (distP < 1.55 && Math.abs(targetPlayer.pos.y - e.pos.y) < 1.8 && e.atkCd <= 0) {
-              hurtPlayer(targetPlayer, 3);
-              e.atkCd = 1.0;
-            }
-          } else if (e.tmr <= 0) {
-            e.tmr = 1.5 + Math.random() * 2;
-            e.dir = Math.random() * 6.28;
-            e.vel.x = Math.sin(e.dir) * e.spd * 0.4;
-            e.vel.z = Math.cos(e.dir) * e.spd * 0.4;
-          }
-        } else if (e.type === 'enderman') {
-          const look = getLookDir();
-          const toE = new THREE.Vector3(
-            e.pos.x - targetPlayer.pos.x,
-            e.pos.y + 1.8 - (targetPlayer.pos.y + 1.4),
-            e.pos.z - targetPlayer.pos.z
-          ).normalize();
-          const canSee = hasLineOfSight(world, e.pos, targetPlayer.pos, 1.8, PH * 0.8);
-          if (distP < 22 && look.dot(toE) > 0.92 && canSee) e.angry = true;
-
-          if (e.angry) {
-            if (canSee) {
-              e.dir = Math.atan2(dxP, dzP);
-              e.vel.x = Math.sin(e.dir) * 3.8;
-              e.vel.z = Math.cos(e.dir) * 3.8;
-              if (distP < 1.75 && Math.abs(targetPlayer.pos.y - e.pos.y) < 2.2 && e.atkCd <= 0) {
-                hurtPlayer(targetPlayer, 5);
-                e.atkCd = 1.0;
-              }
-            } else {
-              e.vel.x *= 0.5;
-              e.vel.z *= 0.5;
-            }
-          } else if (e.tmr <= 0) {
-            e.tmr = 2 + Math.random() * 3;
-            e.dir = Math.random() * 6.28;
-            e.vel.x = Math.sin(e.dir) * e.spd * 0.5;
-            e.vel.z = Math.cos(e.dir) * e.spd * 0.5;
-          }
-        } else if (e.type === 'wolf') {
-          if (e.angry) {
-            const canSee = hasLineOfSight(world, e.pos, targetPlayer.pos, 0.5, PH * 0.6);
-            if (canSee) {
-              e.dir = Math.atan2(dxP, dzP);
-              e.vel.x = Math.sin(e.dir) * e.spd * 1.4;
-              e.vel.z = Math.cos(e.dir) * e.spd * 1.4;
-              if (distP < 1.5 && Math.abs(targetPlayer.pos.y - e.pos.y) < 1.5 && e.atkCd <= 0) {
-                hurtPlayer(targetPlayer, 3);
-                e.atkCd = 0.9;
-              }
-            } else {
-              e.vel.x = 0;
-              e.vel.z = 0;
-            }
-          } else if (e.tamed && e.owner) {
-            let zTarget: ThreeEntity | null = null;
-            let zBest = 12;
-            for (const o of ENT) {
-              if (o.type === 'zombie' || o.type === 'spider' || (o.type === 'enderman' && o.angry)) {
-                const d = Math.hypot(o.pos.x - e.pos.x, o.pos.z - e.pos.z);
-                if (d < zBest) {
-                  zBest = d;
-                  zTarget = o;
-                }
-              }
-            }
-            if (zTarget) {
-              e.dir = Math.atan2(zTarget.pos.x - e.pos.x, zTarget.pos.z - e.pos.z);
-              e.vel.x = Math.sin(e.dir) * e.spd * 1.4;
-              e.vel.z = Math.cos(e.dir) * e.spd * 1.4;
-              if (zBest < 1.5 && e.atkCd <= 0) {
-                zTarget.hp -= 4;
-                e.atkCd = 0.8;
-                spawnParts(zTarget.pos.x - 0.5, zTarget.pos.y + 0.6, zTarget.pos.z - 0.5, 0xff3333, 8);
-                if (zTarget.hp <= 0) {
-                  zTarget.alive = false;
-                  scene.remove(zTarget.mesh);
-                  ENT.splice(ENT.indexOf(zTarget), 1);
-                }
-              }
-            } else {
-              const odx = e.owner.pos.x - e.pos.x;
-              const odz = e.owner.pos.z - e.pos.z;
-              const od = Math.hypot(odx, odz);
-              if (od > 3.2) {
-                e.dir = Math.atan2(odx, odz);
-                e.vel.x = Math.sin(e.dir) * e.spd * 1.3;
-                e.vel.z = Math.cos(e.dir) * e.spd * 1.3;
-              } else {
-                e.vel.x = 0;
-                e.vel.z = 0;
-              }
-            }
-            if (e.tail) e.tail.rotation.y = Math.sin(t * 10) * 0.4;
-          } else if (e.tmr <= 0) {
-            e.tmr = 2 + Math.random() * 4;
-            if (Math.random() < 0.35) {
-              e.vel.x = 0;
-              e.vel.z = 0;
-            } else {
-              e.dir = Math.random() * 6.28;
-              e.vel.x = Math.sin(e.dir) * e.spd * 0.6;
-              e.vel.z = Math.cos(e.dir) * e.spd * 0.6;
-            }
-          }
-        } else if (e.tmr <= 0) {
-          e.tmr = 1.5 + Math.random() * 3.5;
-          if (Math.random() < 0.4) {
-            e.vel.x = 0;
-            e.vel.z = 0;
-          } else {
-            e.dir = Math.random() * 6.28;
-            if (e.home) {
-              const dh = Math.hypot(e.pos.x - e.home.x, e.pos.z - e.home.z);
-              if (dh > VILLAGE_SIZE) e.dir = Math.atan2(e.home.x - e.pos.x, e.home.z - e.pos.z);
-            }
-            e.vel.x = Math.sin(e.dir) * e.spd;
-            e.vel.z = Math.cos(e.dir) * e.spd;
-          }
-        }
-
-        stepEntityMovementWithCollision(world, e, dt);
-        e.mesh.position.set(e.pos.x, e.pos.y, e.pos.z);
-        e.mesh.rotation.y = e.dir;
-
-        const moving = Math.hypot(e.vel.x, e.vel.z) > 0.1;
-        for (let i = 0; i < e.legs.length; i++) {
-          if (e.type === 'spider') {
-            e.legs[i].rotation.y = moving ? Math.sin(t * 14 + i * 0.9) * 0.35 : 0;
-          } else {
-            e.legs[i].rotation.x = moving ? Math.sin(t * 8 + i * Math.PI) * 0.6 : 0;
-          }
-        }
-      }
-    }
-
-    function updBoatsAndRemotePeers(dt: number, t: number) {
-      for (const b of BOATS) {
-        const bob = Math.sin(t * 2.8 + b.id) * 0.04;
-        b.mesh.position.set(b.pos.x, b.pos.y + bob, b.pos.z);
-        b.mesh.rotation.y = b.yaw;
-      }
-
-      for (const rp of remotePeers.values()) {
-        rp.mesh.position.lerp(rp.targetPos, Math.min(1, dt * 12));
-        rp.mesh.rotation.y = rp.yaw;
-        rp.head.rotation.x = rp.pitch;
-        const moving = rp.mesh.position.distanceTo(rp.targetPos) > 0.05;
-        rp.legs[0].rotation.x = moving && !rp.inBoat ? Math.sin(t * 9) * 0.6 : 0;
-        rp.legs[1].rotation.x = moving && !rp.inBoat ? -Math.sin(t * 9) * 0.6 : 0;
-      }
-    }
-
-    function updParts(dt: number) {
-      for (let i = PARTS.length - 1; i >= 0; i--) {
-        const p = PARTS[i];
-        p.life -= dt;
-        p.vel.y -= 14 * dt;
-        p.mesh.position.addScaledVector(p.vel, dt);
-        p.mesh.scale.setScalar(Math.max(0.01, p.life));
-        if (p.life <= 0) {
-          scene.remove(p.mesh);
-          PARTS.splice(i, 1);
-        }
-      }
-    }
-
-    // 11. DAY/NIGHT GLOBAL ILLUMINATION, SKY, MOON & STARS
-    const daySkyColor = new THREE.Color(0x7ec8e3);
-    const duskSkyColor = new THREE.Color(0xd97757);
-    const nightSkyColor = new THREE.Color(0x060916);
-    const curSkyColor = new THREE.Color();
-
-    let hudTick = 0;
-    let netSyncTick = 0;
-
-    function updDayNightAndSky(dt: number) {
-      dayTime = (dayTime + dt * 0.0065) % 1;
-      const sunAngle = (dayTime - 0.25) * Math.PI * 2;
-      const sunElev = Math.sin(sunAngle);
-      const sunHoriz = Math.cos(sunAngle);
-
-      const nightFactor = Math.max(0, Math.min(1, (-sunElev + 0.15) / 0.45));
-      const twilightFactor = Math.max(0, 1 - Math.abs(sunElev) * 3.2);
-
-      const daylightFactor = 1 - nightFactor;
-      sunLight.intensity = 0.08 + daylightFactor * 0.88;
-      ambLight.intensity = 0.16 + daylightFactor * 0.46;
-      hemiLight.intensity = 0.1 + daylightFactor * 0.26;
-
-      curSkyColor.copy(daySkyColor).lerp(nightSkyColor, nightFactor);
-      if (twilightFactor > 0) {
-        curSkyColor.lerp(duskSkyColor, twilightFactor * 0.45);
-      }
-      (scene.background as THREE.Color).copy(curSkyColor);
-      (scene.fog as THREE.Fog).color.copy(curSkyColor);
-
-      skyGroup.position.set(PL1.pos.x, 0, PL1.pos.z);
-      const orbitR = 88;
-      sunMesh.position.set(sunHoriz * orbitR, sunElev * orbitR + 12, -22);
-      sunMesh.visible = sunElev > -0.18;
-
-      moonGroup.position.set(-sunHoriz * orbitR, -sunElev * orbitR + 12, 22);
-      moonGroup.visible = -sunElev > -0.18;
-      moonGroup.lookAt(PL1.pos.x, PL1.pos.y, PL1.pos.z);
-
-      starMat.opacity = Math.max(0, Math.min(0.95, (nightFactor - 0.2) * 1.25));
-      starField.rotation.y += dt * 0.008;
-
-      sunLight.position.set(
-        PL1.pos.x + (sunElev >= 0 ? sunHoriz : -sunHoriz) * 55,
-        Math.max(25, Math.abs(sunElev) * 85 + 20),
-        PL1.pos.z + 30
+    const onMouseMove = (e: MouseEvent) => {
+      if (!pointerLocked) return;
+      camAnglesRef.current.yaw -= e.movementX * 0.0025;
+      camAnglesRef.current.pitch = Math.max(
+        -1.45,
+        Math.min(1.45, camAnglesRef.current.pitch - e.movementY * 0.0025)
       );
+    };
+    document.addEventListener('mousemove', onMouseMove);
 
-      soundEngine.tickAmbientMusic(dt, isNightTime(dayTime), gameStateRef.current === 'playing');
+    const onWheel = (e: WheelEvent) => {
+      if (!pointerLocked) return;
+      PL1.si = (PL1.si + (e.deltaY > 0 ? 1 : -1) + HOTBAR_SIZE) % HOTBAR_SIZE;
+      buildHotbar();
+    };
+    window.addEventListener('wheel', onWheel, { passive: true });
 
-      netSyncTick += dt;
-      if (netSyncTick >= 0.05 && activeConnections.size > 0 && peerInstance) {
-        netSyncTick = 0;
-        broadcastNetMessage({
-          type: 'player:move',
-          peerId: peerInstance.id,
-          x: PL1.pos.x,
-          y: PL1.pos.y,
-          z: PL1.pos.z,
-          yaw,
-          pitch,
-          inBoat: PL1.inBoat,
-        });
+    // ─── INTERACCIÓN: ROMPER / PVP (CLIC IZQ) Y CONSTRUIR / PUERTAS / CABALLOS / MESA (CLIC DER) ──
+    function performBreakOrAttack() {
+      ensureAudio();
+      const yaw = camAnglesRef.current.yaw;
+      const pitch = camAnglesRef.current.pitch;
+      const lookDir = new THREE.Vector3(
+        -Math.sin(yaw) * Math.cos(pitch),
+        Math.sin(pitch),
+        -Math.cos(yaw) * Math.cos(pitch)
+      ).normalize();
+
+      // Requisito 1: PvP Habilitado — Golpear a otros jugadores con clic izquierdo (1 corazón = 2 HP de daño)
+      for (const [pid, rp] of remotePlayers.entries()) {
+        const dPlayer = PL1.pos ? distance3D(PL1.pos, rp.group.position) : 999;
+        if (dPlayer < 4.2) {
+          const toRemote = new THREE.Vector3(
+            rp.group.position.x - PL1.pos.x,
+            rp.group.position.y + 1.0 - (PL1.pos.y + PL1.eyeH),
+            rp.group.position.z - PL1.pos.z
+          ).normalize();
+          if (lookDir.dot(toRemote) > 0.45) {
+            playSfx('hit');
+            spawnBlockParticles(rp.group.position.x, rp.group.position.y + 1.1, rp.group.position.z, 0xef4444, 12);
+            broadcastNetMessage({
+              type: 'pvp:hit',
+              targetPeerId: pid,
+              attackerPeerId: myPeerId,
+              damage: 2,
+            });
+            showMsg('⚔️ ¡Golpe PvP conectado (-1 ❤️ al rival)!');
+            return;
+          }
+        }
       }
 
-      hudTick += dt;
-      if (hudTick > 0.25) {
-        hudTick = 0;
-        setCoords({
-          x: PL1.pos.x | 0,
-          y: PL1.pos.y | 0,
-          z: PL1.pos.z | 0,
-        });
-        const distV = getDistanceToVillage(PL1.pos);
-        setVillageDist(distV);
-        setVillageDir(getCompassDirectionToVillage(PL1.pos));
+      // Atacar mobs/animales cercanos
+      let attackedEntity = false;
+      for (const e of entities) {
+        if (!e.alive || e.state === 'ko') continue;
+        const d = distance3D(PL1.pos, e.pos);
+        if (d < 4.2) {
+          const toEnt = new THREE.Vector3(
+            e.pos.x - PL1.pos.x,
+            e.pos.y + 0.8 - (PL1.pos.y + PL1.eyeH),
+            e.pos.z - PL1.pos.z
+          ).normalize();
+          if (lookDir.dot(toEnt) > 0.45) {
+            const held = PL1.sel;
+            const dmg = held === BT.STONE_PICKAXE ? 9 : held === BT.WOOD_PICKAXE ? 7 : 5;
+            const res = damageEntityLogic(e, PL1, dmg);
+            playSfx('hit');
+            spawnBlockParticles(e.pos.x, e.pos.y + 0.9, e.pos.z, 0xff3333, 10);
+            if (res.defeated) {
+              const msgs: string[] = [];
+              if (res.woolDropped) msgs.push('🧶 +1 Lana obtenida');
+              if (res.boneDropped) msgs.push('🦴 +1 Hueso obtenido');
+              showMsg(
+                msgs.length > 0
+                  ? `⚔️ ¡${e.type.toUpperCase()} derrotado! (${msgs.join(', ')})`
+                  : `⚔️ ¡${e.type.toUpperCase()} derrotado!`
+              );
+              buildHotbar();
+              setUiTick((t) => t + 1);
+            } else {
+              showMsg(`🗡️ Golpeaste a ${e.type} (HP: ${e.hp}/${e.maxHp})`);
+            }
+            attackedEntity = true;
+            break;
+          }
+        }
+      }
 
-        // Calcular el aldeano perdido más cercano para guiar el rescate
-        let nearestV: ThreeEntity | null = null;
-        let bestVD = Infinity;
-        for (const e of ENT) {
-          if (e.type === 'villager' && !e.rescued && !e.inBoat) {
-            const d = Math.hypot(e.pos.x - PL1.pos.x, e.pos.z - PL1.pos.z);
-            if (d < bestVD) {
-              bestVD = d;
-              nearestV = e;
+      if (!attackedEntity) {
+        const hit = raycastBlock(world, PL1.pos, PL1.eyeH, yaw, pitch);
+        if (hit) {
+          const res = breakBlockLogic(world, PL1, hit.bx, hit.by, hit.bz);
+          if (res.broken) {
+            playSfx('break');
+            const col = BD[res.oldType]?.c ?? 0xffffff;
+            spawnBlockParticles(hit.bx, hit.by, hit.bz, col, 14);
+            rebuildMeshes();
+            buildHotbar();
+            setUiTick((t) => t + 1);
+
+            broadcastNetMessage({
+              type: 'block:set',
+              x: hit.bx,
+              y: hit.by,
+              z: hit.bz,
+              blockType: BT.AIR,
+            });
+            if (res.extraCleared) {
+              broadcastNetMessage({
+                type: 'block:set',
+                x: res.extraCleared.x,
+                y: res.extraCleared.y,
+                z: res.extraCleared.z,
+                blockType: BT.AIR,
+              });
+            }
+
+            const itemDef = BD[res.oldType === BT.DOOR_OPEN ? BT.DOOR : res.oldType];
+            if (itemDef) {
+              const yieldTxt = res.bonusYield && res.bonusYield > 1 ? `x${res.bonusYield} (¡Pico!)` : '+1';
+              showMsg(`⛏️ Recolectaste ${yieldTxt} ${itemDef.ic} ${itemDef.n}`);
             }
           }
         }
-        if (nearestV) {
-          setNearestLostVillagerDist(Math.round(bestVD));
-          const dx = nearestV.pos.x - PL1.pos.x;
-          const dz = nearestV.pos.z - PL1.pos.z;
-          const ns = dz < -8 ? 'N' : dz > 8 ? 'S' : '';
-          const ew = dx > 8 ? 'E' : dx < -8 ? 'O' : '';
-          setNearestLostVillagerDir(ns + ew || 'Aquí');
-        } else {
-          setNearestLostVillagerDist(null);
-        }
+      }
+    }
 
-        if (PL1.villageDiscovered) {
-          setVillageDiscovered((prev) => {
-            if (!prev) {
-              showToast('🏘️ ¡Has llegado a la Aldea vacía! Rescata a los aldeanos en bote y tráelos aquí.', 5000);
-            }
-            return true;
+    function performPlaceOrInteract() {
+      ensureAudio();
+      const yaw = camAnglesRef.current.yaw;
+      const pitch = camAnglesRef.current.pitch;
+
+      // 1. Verificar si clic derecho apunta a un Caballo para Montar/Desmontar (Requisito 5)
+      for (const e of entities) {
+        if (e.alive && e.type === 'horse' && distance3D(PL1.pos, e.pos) < 4.5) {
+          const mounted = toggleMountHorseLogic(PL1, e);
+          playSfx('horse');
+          if (mounted) {
+            showMsg('🐎 ¡Montaste al Caballo! Velocidad y salto aumentados (Pulsa X o Clic Der para desmontar).');
+          } else {
+            showMsg('🚶 Desmontaste del caballo.');
+          }
+          return;
+        }
+      }
+
+      // 2. Verificar si clic derecho apunta a un Bote en el agua
+      for (const b of boats) {
+        if (distance3D(PL1.pos, b.pos) < 4.8) {
+          if (PL1.inBoat && PL1.activeBoatId === b.id) {
+            dismountBoatLogic(world, PL1);
+            showMsg('🚶 Bajaste del bote.');
+          } else if (mountBoatLogic(PL1, b)) {
+            playSfx('craft');
+            showMsg('⛵ ¡Subiste al Bote! Navega con WASD y pulsa X para bajar.');
+          }
+          return;
+        }
+      }
+
+      // 3. Si tiene un Bote en la mano, colocarlo en el agua
+      if (PL1.sel === BT.BOAT) {
+        const hit = raycastBlock(world, PL1.pos, PL1.eyeH, yaw, pitch, 7.0);
+        const targetX = hit ? hit.bx : PL1.pos.x - Math.sin(yaw) * 2.5;
+        const targetZ = hit ? hit.bz : PL1.pos.z - Math.cos(yaw) * 2.5;
+        const res = placeBoatInWaterLogic(world, PL1, boats, targetX, targetZ, nextBoatId++);
+        if (res.placed && res.boat) {
+          spawnBoatVisual(res.boat);
+          mountBoatLogic(PL1, res.boat);
+          playSfx('place');
+          buildHotbar();
+          setUiTick((t) => t + 1);
+          showMsg('⛵ ¡Bote botado al mar! Navegando a alta velocidad.');
+          return;
+        } else {
+          showMsg('💧 Acércate a la costa o apunta al agua para colocar el Bote.');
+          return;
+        }
+      }
+
+      // 4. Domesticar lobo cercano con huesos
+      let wolfNear = false;
+      for (const e of entities) {
+        if (e.alive && e.type === 'wolf' && !e.tamed && distance3D(PL1.pos, e.pos) < 4.2) {
+          if (PL1.bones > 0) {
+            wolfNear = true;
+            wolfModalOpenLocal = true;
+            if (document.pointerLockElement) document.exitPointerLock();
+            setWolfNameInput('Fenrir');
+            setWolfModal({ open: true, wolfId: e.id });
+          } else {
+            showMsg('❌ ¡Sin huesos! Derrota enemigos nocturnos para conseguir 🦴');
+          }
+          break;
+        }
+      }
+      if (wolfNear) return;
+
+      // 5. Raycast al bloque apuntado: Puerta de 2 bloques, Mesa de Crafteo o colocar bloque
+      const hit = raycastBlock(world, PL1.pos, PL1.eyeH, yaw, pitch);
+      if (!hit) return;
+
+      const targetBlock = gB(world, hit.bx, hit.by, hit.bz);
+
+      // Requisito 2: Clic derecho sobre cualquier mitad de una Puerta abre o cierra ambas mitades
+      if (targetBlock === BT.DOOR || targetBlock === BT.DOOR_OPEN) {
+        const toggled = toggleTwoBlockDoorLogic(world, hit.bx, hit.by, hit.bz);
+        if (toggled.toggled) {
+          playSfx('door');
+          rebuildMeshes();
+          broadcastNetMessage({
+            type: 'door:toggle',
+            x: hit.bx,
+            y: hit.by,
+            z: hit.bz,
+          });
+          showMsg(toggled.isOpen ? '🚪 Puerta doble abierta.' : '🚪 Puerta doble cerrada.');
+          return;
+        }
+      }
+
+      // Requisito 6: Clic derecho sobre una Mesa de Crafteo abre el menú de recetas avanzadas
+      if (targetBlock === BT.TABLE) {
+        craftingTableOpenLocal = true;
+        setIsCraftingTableOpen(true);
+        if (document.pointerLockElement) document.exitPointerLock();
+        return;
+      }
+
+      // Colocar bloque (Si es BT.DOOR ocupa automáticamente 2 bloques de altura)
+      const res = placeBlockLogic(world, PL1, hit.bx, hit.by, hit.bz, hit.nx, hit.ny, hit.nz);
+      if (res.placed) {
+        playSfx('place');
+        rebuildMeshes();
+        buildHotbar();
+        setUiTick((t) => t + 1);
+        broadcastNetMessage({
+          type: 'block:set',
+          x: res.tx,
+          y: res.ty,
+          z: res.tz,
+          blockType: res.blockType,
+        });
+        if (res.upperDoorPlaced) {
+          broadcastNetMessage({
+            type: 'block:set',
+            x: res.tx,
+            y: res.ty + 1,
+            z: res.tz,
+            blockType: BT.DOOR,
+          });
+          showMsg('🚪 Puerta de 2 bloques colocada (Clic derecho para abrir/cerrar).');
+        } else if (res.blockType === BT.TABLE) {
+          showMsg('🪑 Mesa de Crafteo colocada. Haz clic derecho sobre ella para abrir las recetas.');
+        }
+      } else if (PL1.sel === 0) {
+        showMsg('🎒 Mano vacía: rompe árboles (🪵) o abre la Mesa de Crafteo.');
+      }
+    }
+
+    const onMouseDown = (e: MouseEvent) => {
+      ensureAudio();
+      if (!pointerLocked) return;
+      if (e.button === 0) {
+        performBreakOrAttack();
+      } else if (e.button === 2) {
+        performPlaceOrInteract();
+      }
+    };
+
+    renderer.domElement.addEventListener('mousedown', onMouseDown);
+    const onContextMenu = (e: MouseEvent) => e.preventDefault();
+    window.addEventListener('contextmenu', onContextMenu);
+
+    // ─── HUD HELPERS ──────────────────────────────────────────────────
+    let msgT: number | undefined;
+    function showMsg(txt: string) {
+      const el = document.getElementById('msg');
+      if (!el) return;
+      el.textContent = txt;
+      el.style.opacity = '1';
+      clearTimeout(msgT);
+      msgT = window.setTimeout(() => {
+        el.style.opacity = '0';
+      }, 3200);
+    }
+
+    function triggerDamageOverlay() {
+      const ov = document.getElementById('dmgOverlay');
+      if (!ov) return;
+      ov.style.opacity = '0.55';
+      window.setTimeout(() => {
+        ov.style.opacity = '0';
+      }, 220);
+    }
+
+    function buildHotbar() {
+      const hbEl = document.getElementById('hb1');
+      if (!hbEl) return;
+      hbEl.innerHTML = '';
+      for (let idx = 0; idx < HOTBAR_SIZE; idx++) {
+        const slot = PL1.inventory[idx];
+        const d = slot && slot.count > 0 ? BD[slot.type] : null;
+        const s = document.createElement('div');
+        const active = idx === PL1.si;
+        s.className = active
+          ? 'hs relative w-12 h-12 rounded-xl flex flex-col items-center justify-center cursor-pointer transition-all duration-150 bg-emerald-500/25 border-2 border-emerald-400 shadow-[0_0_16px_rgba(52,211,153,0.45)] scale-105'
+          : 'hs relative w-12 h-12 rounded-xl flex flex-col items-center justify-center cursor-pointer transition-all duration-150 bg-slate-950/65 border border-white/15 hover:border-cyan-400/50';
+        s.innerHTML = `<span class="sn absolute top-0.5 left-1.5 text-[9px] font-mono text-emerald-300/80">${
+          idx + 1
+        }</span><span class="text-lg leading-none">${
+          d ? d.ic : '<span class="text-slate-600 text-xs">·</span>'
+        }</span>${
+          slot && slot.count > 0
+            ? `<span class="absolute bottom-0.5 right-1 text-[10px] font-mono font-bold text-amber-300 drop-shadow">${slot.count}</span>`
+            : ''
+        }`;
+        s.onclick = (ev) => {
+          ev.stopPropagation();
+          PL1.si = idx;
+          buildHotbar();
+          setUiTick((t) => t + 1);
+        };
+        hbEl.appendChild(s);
+      }
+
+      const activeBlockLabel = document.getElementById('activeBlockLabel');
+      if (activeBlockLabel) {
+        const activeSlot = PL1.inventory[PL1.si];
+        const bd = activeSlot && activeSlot.count > 0 ? BD[activeSlot.type] : null;
+        activeBlockLabel.textContent =
+          bd && activeSlot
+            ? `${bd.ic} ${bd.n} (x${activeSlot.count}) — ${bd.role}`
+            : '🤲 Mano vacía — Rompe bloques (Clic Izq) para recolectar recursos';
+      }
+    }
+
+    function buildHP() {
+      const el = document.getElementById('hp1');
+      if (!el) return;
+      el.innerHTML = '';
+      for (let i = 0; i < 10; i++) {
+        const s = document.createElement('span');
+        s.className = 'ht text-sm drop-shadow-[0_0_6px_rgba(244,63,94,0.6)]';
+        s.textContent = i < Math.ceil(PL1.hp / 2) ? '❤️' : '🖤';
+        el.appendChild(s);
+      }
+    }
+
+    // ─── ACCIONES EXPUESTAS A MODALES Y BOTONES DE REACT ──────────────
+    actionsRef.current = {
+      confirmWolfName: (name: string) => {
+        ensureAudio();
+        const target = entities.find((e) => e.id === wolfModal.wolfId);
+        if (target && target.alive && target.type === 'wolf' && !target.tamed) {
+          const res = tameWolfLogic(target, PL1, name);
+          if (res.tamed) {
+            target.mesh.children.forEach((c) => {
+              const meshChild = c as THREE.Mesh;
+              if (meshChild.material) {
+                (meshChild.material as THREE.MeshLambertMaterial).color.setHex(0xddaa44);
+              }
+            });
+            target.mesh.add(mkBox(0.44, 0.1, 0.44, 0xff2200, 0, 0.62, 0.42));
+            playSfx('tame');
+            showMsg(`🐕 ¡${res.name} domesticado! Te protegerá de noche.`);
+          }
+        }
+        wolfModalOpenLocal = false;
+        setWolfModal({ open: false, wolfId: null });
+        renderer.domElement.requestPointerLock?.();
+      },
+      cancelWolfName: () => {
+        wolfModalOpenLocal = false;
+        setWolfModal({ open: false, wolfId: null });
+        renderer.domElement.requestPointerLock?.();
+      },
+      craftPlanks: () => {
+        ensureAudio();
+        const res = craftWoodToPlanksLogic(PL1);
+        if (res.crafted) {
+          playSfx('craft');
+          buildHotbar();
+          setUiTick((t) => t + 1);
+          showMsg(`🪚 ¡Crafteaste +4 📦 Tablones! (Total: ${res.planksTotal})`);
+        } else {
+          showMsg('❌ Necesitas al menos 1 🪵 Madera para craftear 4 Tablones.');
+        }
+      },
+      craftTable: () => {
+        ensureAudio();
+        const res = craftPlanksToTableLogic(PL1);
+        if (res.crafted) {
+          playSfx('craft');
+          buildHotbar();
+          setUiTick((t) => t + 1);
+          showMsg('🪑 ¡Mesa de Crafteo creada! Colócala con Clic Derecho y úsala.');
+        } else {
+          showMsg('❌ Necesitas 4 📦 Tablones para crear una 🪑 Mesa de Crafteo.');
+        }
+      },
+      craftSticks: () => {
+        ensureAudio();
+        const res = craftPlanksToSticksLogic(PL1);
+        if (res.crafted) {
+          playSfx('craft');
+          buildHotbar();
+          setUiTick((t) => t + 1);
+          showMsg(`🥢 ¡Crafteaste +4 Palos! (Total: ${res.sticksTotal})`);
+        } else {
+          showMsg('❌ Necesitas 2 📦 Tablones para craftear 4 🥢 Palos.');
+        }
+      },
+      craftWoodPickaxe: () => {
+        ensureAudio();
+        const res = craftWoodPickaxeLogic(PL1);
+        if (res.crafted) {
+          playSfx('craft');
+          buildHotbar();
+          setUiTick((t) => t + 1);
+          showMsg('⛏️ ¡Pico de Madera crafteado! Pica piedra el doble de rápido.');
+        } else {
+          showMsg('❌ Necesitas 3 📦 Tablones + 2 🥢 Palos para el Pico de Madera.');
+        }
+      },
+      craftStonePickaxe: () => {
+        ensureAudio();
+        const res = craftStonePickaxeLogic(PL1);
+        if (res.crafted) {
+          playSfx('craft');
+          buildHotbar();
+          setUiTick((t) => t + 1);
+          showMsg('⚒️ ¡Pico de Piedra crafteado! Pica piedra x3 de rápido.');
+        } else {
+          showMsg('❌ Necesitas 3 🪨 Piedras + 2 🥢 Palos para el Pico de Piedra.');
+        }
+      },
+      craftBoat: () => {
+        ensureAudio();
+        const res = craftPlanksToBoatLogic(PL1);
+        if (res.crafted) {
+          playSfx('craft');
+          buildHotbar();
+          setUiTick((t) => t + 1);
+          showMsg('⛵ ¡Crafteaste 1 Bote! Selecciónalo y haz Clic Derecho en el agua.');
+        } else {
+          showMsg('❌ Necesitas 5 📦 Tablones para craftear 1 ⛵ Bote.');
+        }
+      },
+      craftBed: () => {
+        ensureAudio();
+        const res = craftWoolAndPlanksToBedLogic(PL1);
+        if (res.crafted) {
+          playSfx('craft');
+          buildHotbar();
+          setUiTick((t) => t + 1);
+          showMsg('🛏️ ¡Cama crafteada con 3 Lanas + 3 Tablones!');
+        } else {
+          showMsg('❌ Necesitas 3 🧶 Lanas (de oveja) + 3 📦 Tablones para craftear 1 Cama.');
+        }
+      },
+      craftDoor: () => {
+        ensureAudio();
+        const res = craftPlanksToDoorLogic(PL1);
+        if (res.crafted) {
+          playSfx('craft');
+          buildHotbar();
+          setUiTick((t) => t + 1);
+          showMsg('🚪 ¡Puerta Doble (2 bloques) crafteada!');
+        } else {
+          showMsg('❌ Necesitas 2 📦 Tablones para craftear 1 🚪 Puerta.');
+        }
+      },
+      changeClothes: () => {
+        ensureAudio();
+        const res = cyclePlayerClothesLogic(PL1);
+        playSfx('craft');
+        setUiTick((t) => t + 1);
+        broadcastNetMessage({
+          type: 'clothes:change',
+          peerId: myPeerId,
+          clothesIdx: res.clothesIdx,
+        });
+        showMsg(`👕 Ropa cambiada a: ${res.name}`);
+      },
+      saveGame: () => {
+        ensureAudio();
+        try {
+          const json = serializeSaveGame(
+            world,
+            PL1,
+            camAnglesRef.current.yaw,
+            camAnglesRef.current.pitch
+          );
+          localStorage.setItem(SAVE_STORAGE_KEY, json);
+          saveToIndexedDB(SAVE_STORAGE_KEY, json);
+          setHasSavedGame(true);
+          playSfx('craft');
+          showMsg('💾 ¡Partida guardada (Posición, Inventario y Mundo guardados)!');
+        } catch {
+          showMsg('⚠️ No se pudo guardar en el almacenamiento local.');
+        }
+      },
+      toggleRedGreenChallenge: () => {
+        ensureAudio();
+        const next = challengeStateRef.current === 'off' ? 'green' : 'off';
+        challengeStateRef.current = next;
+        setChallengeState(next);
+        if (next === 'green') {
+          playSfx('greenlight');
+          showMsg('🚦 ¡Desafío "Luz Roja, Luz Verde" ACTIVADO!');
+        } else {
+          showMsg('🚦 Desafío "Luz Roja, Luz Verde" finalizado.');
+        }
+        broadcastNetMessage({
+          type: 'challenge:state',
+          state: next,
+        });
+      },
+      sendChatMessage: (text: string) => {
+        const clean = text.trim();
+        chatOpenLocal = false;
+        setIsChatOpen(false);
+        setChatInputText('');
+        if (clean.length > 0) {
+          addFloatingChatBubble(myPeerId, 'Tú', clean, true);
+          broadcastNetMessage({
+            type: 'chat:msg',
+            peerId: myPeerId,
+            senderLabel: roomCode ? `Jugador (${roomCode})` : 'Jugador',
+            text: clean,
           });
         }
-        setDayPhase(getDayPhaseLabel(dayTime));
-        setIsNightUI(isNightTime(dayTime));
-      }
-    }
-
-    // 12. RESIZE & ANIMATION LOOP
-    const onResize = () => {
-      cam1.aspect = window.innerWidth / window.innerHeight;
-      cam1.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+        if (!touchDetected) {
+          renderer.domElement.requestPointerLock?.();
+        }
+      },
+      handleSlotClick: (slotIdx: number) => {
+        setSelectedSwapSlot((prev) => {
+          if (prev === null) return slotIdx;
+          if (prev !== slotIdx) {
+            swapInventorySlots(PL1, prev, slotIdx);
+            buildHotbar();
+            setUiTick((t) => t + 1);
+          }
+          return null;
+        });
+      },
+      selectHotbarSlot: (slotIdx: number) => {
+        PL1.si = slotIdx;
+        buildHotbar();
+        setUiTick((t) => t + 1);
+      },
+      createRoom: () => {
+        ensureAudio();
+        startHostingRoom();
+      },
+      joinRoom: (code: string) => {
+        ensureAudio();
+        connectToExistingRoom(code);
+      },
+      touchActionBreak: () => {
+        performBreakOrAttack();
+      },
+      touchActionPlace: () => {
+        performPlaceOrInteract();
+      },
+      touchJumpStart: () => {
+        if (!keys['Space']) jumpJustPressed = true;
+        keys['Space'] = true;
+      },
+      touchJumpEnd: () => {
+        jumpJustReleased = true;
+        keys['Space'] = false;
+      },
+      toggleInventoryModal: () => {
+        inventoryOpenLocal = !inventoryOpenLocal;
+        setIsInventoryOpen(inventoryOpenLocal);
+        setSelectedSwapSlot(null);
+      },
+      toggleCraftingTableModal: () => {
+        craftingTableOpenLocal = !craftingTableOpenLocal;
+        setIsCraftingTableOpen(craftingTableOpenLocal);
+        if (craftingTableOpenLocal && document.pointerLockElement) {
+          document.exitPointerLock();
+        }
+      },
     };
-    window.addEventListener('resize', onResize);
 
+    buildHotbar();
+    buildHP();
+
+    // ─── BUCLE PRINCIPAL DE SIMULACIÓN, DESAFÍO Y CULLING ─────────────
+    let zSpawnT = 0;
+    let netSyncT = 0;
+    let challengeSwitchT = 4.0;
     let lastT = performance.now();
     let animFrameId = 0;
 
-    function animate(now: number) {
-      animFrameId = requestAnimationFrame(animate);
-      const dt = Math.min((now - lastT) / 1000, 0.05);
-      lastT = now;
-      const t = now * 0.001;
+    function updateDayNight(dt: number) {
+      dayTime = (dayTime + DAY_SPEED * dt) % 1;
+      const ang = dayTime * Math.PI * 2;
+      const sy = Math.sin(ang);
+      const cy = Math.cos(ang);
 
-      if (gameStateRef.current === 'playing') {
-        const activeBoat = getActiveBoat();
-        const physRes = stepPlayerPhysics(
-          world,
-          PL1,
-          {
-            fwd: !!(keys['KeyW'] || keys['ArrowUp']),
-            back: !!(keys['KeyS'] || keys['ArrowDown']),
-            left: !!(keys['KeyA'] || keys['ArrowLeft']),
-            right: !!(keys['KeyD'] || keys['ArrowRight']),
-            jumpHeld: !!keys['Space'],
-            jumpJustPressed,
-            jumpJustReleased,
-            yaw,
-            joyX: joyVecRef.current.x,
-            joyY: joyVecRef.current.y,
-          },
-          dt,
-          activeBoat
-        );
-        jumpJustPressed = false;
-        jumpJustReleased = false;
+      sunMesh.position.set(PL1.pos.x + cy * 105, sy * 105, PL1.pos.z + 30);
+      moonMesh.position.set(PL1.pos.x - cy * 105, -sy * 105, PL1.pos.z - 30);
+      skyMesh.position.set(PL1.pos.x, 0, PL1.pos.z);
+      stars.position.set(PL1.pos.x, 0, PL1.pos.z);
+      sunL.position.copy(sunMesh.position);
 
-        if (physRes.jumped) {
-          soundEngine.playJump();
-        }
-        if (physRes.footstepTriggered) {
-          soundEngine.playFootstep(physRes.inWater);
-        }
+      const dayF = Math.max(0, Math.min(1, (sy + 0.2) / 0.6));
+      const skyCol = new THREE.Color().lerpColors(
+        new THREE.Color(0x050510),
+        new THREE.Color(0x87ceeb),
+        dayF
+      );
 
-        const curCx = Math.floor(PL1.pos.x / 16);
-        const curCz = Math.floor(PL1.pos.z / 16);
-        if (curCx !== lastBuiltCenterCx || curCz !== lastBuiltCenterCz) {
-          rebuildMeshes(PL1.pos.x, PL1.pos.z);
-        }
-
-        aiEnts(dt, t);
-        updBoatsAndRemotePeers(dt, t);
-        updParts(dt);
-        updDayNightAndSky(dt);
+      if (sy > -0.15 && sy < 0.25) {
+        const sf = 1 - Math.abs(sy - 0.05) / 0.2;
+        skyCol.lerp(new THREE.Color(0xff6633), sf * 0.45);
       }
 
-      updateCameraAndHighlight(PL1);
+      skyMat.color.copy(skyCol);
+      (scene.fog as THREE.FogExp2).color.copy(skyCol);
+      ambL.intensity = 0.18 + dayF * 0.52;
+      sunL.intensity = dayF * 0.95;
+      stMat.opacity = Math.max(0, 1 - dayF * 2.5);
+
+      const despawned = despawnDaytimeMonsters(entities, dayTime);
+      for (const d of despawned) {
+        const me = d as MeshEntity;
+        spawnBlockParticles(me.pos.x, me.pos.y + 1, me.pos.z, 0xffaa22, 8);
+        scene.remove(me.mesh);
+      }
+
+      // Requisito 2: Algoritmo corregido de aparición nocturna de Zombies y Arañas
+      const night = isNightTime(dayTime);
+      if (night) {
+        zSpawnT += dt;
+        if (zSpawnT > 2.2) {
+          zSpawnT = 0;
+          const activeZombies = entities.filter((e) => e.alive && e.type === 'zombie').length;
+          const activeSpiders = entities.filter((e) => e.alive && e.type === 'spider').length;
+          const activeEndermen = entities.filter((e) => e.alive && e.type === 'enderman').length;
+
+          const spawnPt = findValidMonsterSpawnPoint(world, PL1.pos);
+          if (spawnPt) {
+            if (activeEndermen < MAX_ENDERMEN && Math.random() < ENDERMAN_SPAWN_CHANCE) {
+              addEnderman(spawnPt.x, spawnPt.z, spawnPt.y);
+            } else if (activeZombies < MAX_ZOMBIES && (activeZombies <= activeSpiders || activeSpiders >= MAX_SPIDERS)) {
+              addZombie(spawnPt.x, spawnPt.z, spawnPt.y);
+            } else if (activeSpiders < MAX_SPIDERS) {
+              addSpider(spawnPt.x, spawnPt.z, spawnPt.y);
+            }
+          }
+        }
+      }
+
+      const dnEl = document.getElementById('dn');
+      if (dnEl) {
+        dnEl.textContent = getDayPhaseLabel(dayTime);
+      }
+    }
+
+    function updateEntities(dt: number, nowSec: number) {
+      for (const e of entities) {
+        if (!e.alive) {
+          if (e.state === 'ko' && e.koTimer > 0) {
+            e.koTimer -= dt;
+            e.mesh.rotation.z = Math.min(Math.PI / 2, (1 - e.koTimer / 0.35) * (Math.PI / 2));
+            e.mesh.scale.setScalar(Math.max(0.1, e.koTimer / 0.35));
+            if (e.koTimer <= 0) {
+              scene.remove(e.mesh);
+            }
+          }
+          continue;
+        }
+
+        if (e.hitFlashTimer > 0) {
+          e.hitFlashTimer -= dt;
+          e.mesh.scale.set(1.12, 0.88, 1.12);
+        } else {
+          e.mesh.scale.set(1, 1, 1);
+        }
+
+        // Si es un caballo montado por el jugador, sincronizar rotación y animación de galope
+        if (e.type === 'horse' && e.riddenByPlayer && PL1.mountedHorseId === e.id) {
+          e.mesh.position.set(PL1.pos.x, PL1.pos.y - 0.55, PL1.pos.z);
+          e.mesh.rotation.y = camAnglesRef.current.yaw + Math.PI;
+          const speed = Math.hypot(PL1.vel.x, PL1.vel.z);
+          e.legs.forEach((l, i) => {
+            l.rotation.x = speed > 0.2 ? Math.sin(nowSec * 14 + i * Math.PI) * 0.65 : 0;
+          });
+          continue;
+        }
+
+        e.timer -= dt;
+        const np = nearestPlayer(e.pos, PL1);
+
+        if (e.type === 'fish') {
+          if (e.timer <= 0) {
+            e.vel.set((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 4);
+            e.timer = 2 + Math.random() * 3;
+          }
+          e.pos.addScaledVector(e.vel, dt);
+          e.pos.y = Math.min(SEA - 0.4, Math.max(2, e.pos.y));
+          if (e.vel.lengthSq() > 0.01) e.mesh.rotation.y = Math.atan2(e.vel.x, e.vel.z);
+        } else if (e.type === 'cow' || e.type === 'sheep' || e.type === 'chicken' || e.type === 'horse') {
+          if (e.timer <= 0) {
+            if (Math.random() < 0.6) {
+              const a = Math.random() * Math.PI * 2;
+              const sp = e.type === 'horse' ? 2.4 : e.type === 'chicken' ? 2.0 : 1.4;
+              e.vel.set(Math.sin(a) * sp, 0, Math.cos(a) * sp);
+            } else {
+              e.vel.set(0, 0, 0);
+            }
+            e.timer = 2 + Math.random() * 4;
+          }
+          stepEntityMovementWithCollision(world, e, dt);
+          const h = getH(Math.floor(e.pos.x), Math.floor(e.pos.z));
+          if (h <= SEA) {
+            e.vel.negate();
+          }
+          if (e.vel.lengthSq() > 0.05) {
+            e.mesh.rotation.y = Math.atan2(e.vel.x, e.vel.z);
+            e.legs.forEach((l, i) => {
+              l.rotation.x = Math.sin(nowSec * 8 + i * Math.PI) * 0.5;
+            });
+          } else {
+            e.legs.forEach((l) => {
+              l.rotation.x = 0;
+            });
+          }
+        } else if (e.type === 'zombie' || e.type === 'spider' || e.type === 'enderman') {
+          const prevHp = PL1.hp;
+          const combatRes = stepEnemyCombatLogic(world, e, PL1, dt);
+
+          if (e.eyes) {
+            const windupColor =
+              e.state === 'windup'
+                ? 0xffff00
+                : e.type === 'enderman'
+                  ? 0xd946ef
+                  : 0xff1111;
+            e.eyes.forEach((eye) => {
+              (eye.material as THREE.MeshBasicMaterial).color.setHex(windupColor);
+            });
+          }
+
+          if (combatRes.attacked && PL1.hp < prevHp) {
+            buildHP();
+            playSfx('hurt');
+            triggerDamageOverlay();
+            if (PL1.hp <= 0) {
+              triggerPlayerDeathAndRespawn('💀 ¡Fuiste derrotado por criaturas de la noche! Reapareciendo en el Spawn...');
+              buildHP();
+            } else {
+              const attackerLabel =
+                e.type === 'enderman' ? 'Enderman' : e.type === 'spider' ? 'Araña' : 'Zombie';
+              showMsg(`💔 ¡Un ${attackerLabel} te atacó! (-${combatRes.damageDealt} HP)`);
+            }
+          }
+
+          if (e.state === 'idle' && e.timer <= 0) {
+            const a = Math.random() * Math.PI * 2;
+            e.vel.x = Math.sin(a) * 1.2;
+            e.vel.z = Math.cos(a) * 1.2;
+            e.timer = 2 + Math.random() * 2;
+          }
+
+          stepEntityMovementWithCollision(world, e, dt);
+          if (Math.hypot(e.vel.x, e.vel.z) > 0.05) {
+            e.mesh.rotation.y = Math.atan2(e.vel.x, e.vel.z);
+            const animSpeed = e.type === 'spider' ? 16 : 9;
+            e.legs.forEach((l, i) => {
+              if (e.type === 'spider') {
+                l.rotation.y = Math.sin(nowSec * animSpeed + i * 1.1) * 0.35;
+              } else {
+                l.rotation.x = Math.sin(nowSec * animSpeed + i * Math.PI) * 0.6;
+              }
+            });
+          }
+        } else if (e.type === 'wolf') {
+          if (np.dist < 10) {
+            const combatRes = stepEnemyCombatLogic(world, e, PL1, dt);
+            if (combatRes.attacked) {
+              buildHP();
+              playSfx('hurt');
+              triggerDamageOverlay();
+              if (PL1.hp <= 0) {
+                triggerPlayerDeathAndRespawn('💀 ¡Caíste ante un lobo salvaje! Reapareciendo en el Spawn...');
+                buildHP();
+              } else {
+                showMsg('🐺 ¡Lobo salvaje te mordió! Domestícalo con Clic Derecho (🦴)');
+              }
+            }
+          } else if (e.timer <= 0) {
+            const a = Math.random() * Math.PI * 2;
+            e.vel.set(Math.sin(a) * 2, 0, Math.cos(a) * 2);
+            e.timer = 2 + Math.random() * 3;
+          }
+          stepEntityMovementWithCollision(world, e, dt);
+          if (Math.hypot(e.vel.x, e.vel.z) > 0.05) {
+            e.mesh.rotation.y = Math.atan2(e.vel.x, e.vel.z);
+            e.legs.forEach((l, i) => {
+              l.rotation.x = Math.sin(nowSec * 10 + i * Math.PI) * 0.5;
+            });
+          }
+        } else if (e.type === 'wolf_t') {
+          let nearEnemy: MeshEntity | null = null;
+          let nd = 16;
+          for (const z of entities) {
+            if (
+              z.alive &&
+              (z.type === 'zombie' || z.type === 'spider' || z.type === 'enderman')
+            ) {
+              const d = distance3D(e.pos, z.pos);
+              if (d < nd) {
+                nd = d;
+                nearEnemy = z;
+              }
+            }
+          }
+          if (nearEnemy) {
+            const d = new THREE.Vector3()
+              .subVectors(nearEnemy.pos, e.pos)
+              .setY(0)
+              .normalize();
+            e.vel.x = d.x * 5.2;
+            e.vel.z = d.z * 5.2;
+            if (nd < 1.8 && e.timer <= 0) {
+              const res = damageEntityLogic(nearEnemy, PL1, 6);
+              playSfx('hit');
+              spawnBlockParticles(nearEnemy.pos.x, nearEnemy.pos.y + 1, nearEnemy.pos.z, 0xffaa00, 8);
+              if (res.defeated) {
+                showMsg(`🐕 ¡${e.wname} eliminó a un monstruo!`);
+              }
+              e.timer = 0.7;
+            }
+          } else {
+            const d = distance3D(e.pos, PL1.pos);
+            if (d > 3.5) {
+              const dir = new THREE.Vector3()
+                .subVectors(PL1.pos, e.pos)
+                .setY(0)
+                .normalize();
+              e.vel.x = dir.x * 4.8;
+              e.vel.z = dir.z * 4.8;
+            } else {
+              e.vel.set(0, 0, 0);
+            }
+          }
+          stepEntityMovementWithCollision(world, e, dt);
+          if (Math.hypot(e.vel.x, e.vel.z) > 0.05) {
+            e.mesh.rotation.y = Math.atan2(e.vel.x, e.vel.z);
+            e.legs.forEach((l, i) => {
+              l.rotation.x = Math.sin(nowSec * 10 + i * Math.PI) * 0.5;
+            });
+          }
+        }
+      }
+    }
+
+    function loop() {
+      animFrameId = requestAnimationFrame(loop);
+      const now = performance.now();
+      const dt = Math.min((now - lastT) / 1000, 0.05);
+      lastT = now;
+
+      // Requisito 4: Lógica del anfitrión para alternar "Luz Verde" y "Luz Roja"
+      if (isHost && challengeStateRef.current !== 'off') {
+        challengeSwitchT -= dt;
+        if (challengeSwitchT <= 0) {
+          const nextState = challengeStateRef.current === 'green' ? 'red' : 'green';
+          challengeStateRef.current = nextState;
+          setChallengeState(nextState);
+          challengeSwitchT = nextState === 'green' ? 3.6 + Math.random() * 1.8 : 2.5 + Math.random() * 1.2;
+          if (nextState === 'green') playSfx('greenlight');
+          else playSfx('redlight');
+          broadcastNetMessage({
+            type: 'challenge:state',
+            state: nextState,
+          });
+        }
+      }
+
+      const activeControls =
+        (pointerLocked || touchDetected) &&
+        !wolfModalOpenLocal &&
+        !inventoryOpenLocal &&
+        !craftingTableOpenLocal &&
+        !chatOpenLocal;
+
+      const playerInput = {
+        fwd: activeControls && !!(keys['KeyW'] || keys['ArrowUp']),
+        back: activeControls && !!(keys['KeyS'] || keys['ArrowDown']),
+        left: activeControls && !!(keys['KeyA'] || keys['ArrowLeft']),
+        right: activeControls && !!(keys['KeyD'] || keys['ArrowRight']),
+        jumpHeld: activeControls && !!keys['Space'],
+        jumpJustPressed: activeControls && jumpJustPressed,
+        jumpJustReleased: activeControls && jumpJustReleased,
+        yaw: camAnglesRef.current.yaw,
+        joyX: activeControls ? joyVecRef.current.x : 0,
+        joyY: activeControls ? joyVecRef.current.y : 0,
+      };
+
+      // Requisito 4: Si está en "Luz Roja", cualquier jugador que presione una tecla o mueva el joystick muere al instante
+      if (challengeStateRef.current === 'red' && isPlayerMovingInput(playerInput)) {
+        triggerPlayerDeathAndRespawn(
+          '🚦 ¡TE MOVISTE EN LUZ ROJA! Eliminado al instante — Reapareciendo en el Spawn.'
+        );
+      } else {
+        const activeBoat = PL1.inBoat ? boats.find((b) => b.id === PL1.activeBoatId) || null : null;
+        const mountedHorse =
+          PL1.mountedHorseId !== null
+            ? entities.find((e) => e.id === PL1.mountedHorseId && e.alive) || null
+            : null;
+
+        const phys = stepPlayerPhysics(world, PL1, playerInput, dt, activeBoat, mountedHorse);
+
+        if (activeBoat) {
+          const bm = boatMeshes.get(activeBoat.id);
+          if (bm) {
+            bm.position.set(activeBoat.pos.x, activeBoat.pos.y, activeBoat.pos.z);
+            bm.rotation.y = activeBoat.yaw;
+          }
+        }
+
+        if (phys.jumped) playSfx('jump');
+        if (phys.landed) playSfx('land');
+        if (phys.footstepTriggered) playSfx('step');
+      }
+
+      jumpJustPressed = false;
+      jumpJustReleased = false;
+
+      const moveSpeed = Math.hypot(PL1.vel.x, PL1.vel.z);
+      if (moveSpeed > 0.15) {
+        localWalkPhase += dt * moveSpeed * 1.8;
+      }
+
+      // Carga dinámica de Chunks infinitos y descarga (despawn) de chunks lejanos
+      const curCX = Math.floor(PL1.pos.x / CHUNK_SIZE);
+      const curCZ = Math.floor(PL1.pos.z / CHUNK_SIZE);
+      if (curCX !== activeCenterCX || curCZ !== activeCenterCZ) {
+        activeCenterCX = curCX;
+        activeCenterCZ = curCZ;
+        ensureChunksAroundPlayer(world, PL1.pos.x, PL1.pos.z, VIEW_CHUNK_RADIUS);
+        rebuildMeshes();
+      }
+
+      // Sincronización P2P de posición, animaciones y estado
+      netSyncT += dt;
+      if (netSyncT >= 0.05 && connections.size > 0) {
+        netSyncT = 0;
+        broadcastNetMessage({
+          type: 'player:move',
+          peerId: myPeerId,
+          x: PL1.pos.x,
+          y: PL1.pos.y,
+          z: PL1.pos.z,
+          yaw: camAnglesRef.current.yaw,
+          pitch: camAnglesRef.current.pitch,
+          heldBlock: PL1.sel,
+          inBoat: PL1.inBoat,
+          mountedHorse: PL1.mountedHorseId !== null,
+          clothesIdx: PL1.clothesIdx,
+          walkPhase: localWalkPhase,
+        });
+      }
+
+      // Interpolar avatares de jugadores remotos y sus animaciones sincronizadas
+      for (const rp of remotePlayers.values()) {
+        const distMoved = rp.group.position.distanceTo(rp.targetPos);
+        rp.group.position.lerp(rp.targetPos, Math.min(1, dt * 12));
+        rp.group.rotation.y = rp.targetYaw;
+        rp.head.rotation.x = rp.targetPitch;
+        if (distMoved > 0.015) {
+          rp.legs.forEach((l, idx) => {
+            l.rotation.x = Math.sin(rp.walkPhase * 2.2 + idx * Math.PI) * 0.6;
+          });
+          rp.arms.forEach((a, idx) => {
+            a.rotation.x = Math.sin(rp.walkPhase * 2.2 + (idx + 1) * Math.PI) * 0.5;
+          });
+        } else {
+          rp.legs.forEach((l) => {
+            l.rotation.x = 0;
+          });
+          rp.arms.forEach((a) => {
+            a.rotation.x = 0;
+          });
+        }
+      }
+
+      cam1.position.set(PL1.pos.x, PL1.pos.y + PL1.eyeH, PL1.pos.z);
+      cam1.rotation.order = 'YXZ';
+      cam1.rotation.y = camAnglesRef.current.yaw;
+      cam1.rotation.x = camAnglesRef.current.pitch;
+      cam1.updateMatrixWorld();
+
+      // Requisito 8: Frustum Culling explícito por cámara para bloques y entidades
+      projScreenMatrix.multiplyMatrices(cam1.projectionMatrix, cam1.matrixWorldInverse);
+      frustum.setFromProjectionMatrix(projScreenMatrix);
+      for (const im of Object.values(iMeshes)) {
+        if (im.boundingSphere) {
+          im.visible = frustum.intersectsSphere(im.boundingSphere);
+        }
+      }
+
+      // Proyectar mensajes de chat flotantes 3D sobre la cabeza de los personajes (5 segundos)
+      if (floatingChatsRef.current.length > 0) {
+        const activeBubbles: FloatingChatBubble[] = [];
+        for (const b of floatingChatsRef.current) {
+          if (now >= b.expiresAt) continue;
+          if (b.isLocal) {
+            b.screenX = window.innerWidth * 0.5;
+            b.screenY = 115;
+            b.visible = true;
+            activeBubbles.push(b);
+          } else {
+            const rp = remotePlayers.get(b.peerId);
+            if (rp) {
+              const headWorld = new THREE.Vector3(
+                rp.group.position.x,
+                rp.group.position.y + 2.25,
+                rp.group.position.z
+              );
+              headWorld.project(cam1);
+              if (headWorld.z < 1) {
+                b.screenX = (headWorld.x * 0.5 + 0.5) * window.innerWidth;
+                b.screenY = (-headWorld.y * 0.5 + 0.5) * window.innerHeight;
+                b.visible = true;
+              } else {
+                b.visible = false;
+              }
+            }
+            activeBubbles.push(b);
+          }
+        }
+        floatingChatsRef.current = activeBubbles;
+        setFloatingChats([...activeBubbles]);
+      }
+
+      const hit = raycastBlock(
+        world,
+        PL1.pos,
+        PL1.eyeH,
+        camAnglesRef.current.yaw,
+        camAnglesRef.current.pitch
+      );
+      if (hit) {
+        selBox.position.set(hit.bx + 0.5, hit.by + 0.5, hit.bz + 0.5);
+        selBox.visible = true;
+      } else {
+        selBox.visible = false;
+      }
+
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.life -= dt;
+        if (p.life <= 0) {
+          scene.remove(p.mesh);
+          (p.mesh.material as THREE.Material).dispose();
+          particles.splice(i, 1);
+          continue;
+        }
+        p.vel.y -= 14 * dt;
+        p.mesh.position.addScaledVector(p.vel, dt);
+        p.mesh.scale.setScalar(Math.max(0.1, p.life / p.maxLife));
+      }
+
+      updateDayNight(dt);
+      updateEntities(dt, now / 1000);
+
+      const posEl = document.getElementById('pos1');
+      if (posEl) {
+        posEl.textContent = `${Math.floor(PL1.pos.x)}, ${Math.floor(PL1.pos.y)}, ${Math.floor(
+          PL1.pos.z
+        )}`;
+      }
+      const boneEl = document.getElementById('bones1');
+      if (boneEl) {
+        boneEl.textContent = `🦴 ${PL1.bones}`;
+      }
+      const woodEl = document.getElementById('woodCountHud');
+      if (woodEl) {
+        woodEl.textContent = `${countItemInInventory(PL1, BT.WOOD)}`;
+      }
+      const plankEl = document.getElementById('plankCountHud');
+      if (plankEl) {
+        plankEl.textContent = `${countItemInInventory(PL1, BT.PLANK)}`;
+      }
+      const woolEl = document.getElementById('woolCountHud');
+      if (woolEl) {
+        woolEl.textContent = `${countItemInInventory(PL1, BT.WOOL)}`;
+      }
+
+      renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
       renderer.render(scene, cam1);
     }
 
-    animFrameId = requestAnimationFrame(animate);
+    loop();
+
+    const onResize = () => {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      cam1.aspect = window.innerWidth / window.innerHeight;
+      cam1.updateProjectionMatrix();
+    };
+    window.addEventListener('resize', onResize);
 
     return () => {
       cancelAnimationFrame(animFrameId);
-      if (toastTimer) window.clearTimeout(toastTimer);
       if (peerInstance) peerInstance.destroy();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('mousemove', onMouseMove);
-      renderer.domElement.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('pointerlockchange', onPointerLockChange);
+      document.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('wheel', onWheel);
       window.removeEventListener('contextmenu', onContextMenu);
-      document.removeEventListener('pointerlockchange', onPointerLockChange);
       window.removeEventListener('resize', onResize);
+      renderer.domElement.removeEventListener('mousedown', onMouseDown);
       renderer.dispose();
     };
   }, []);
 
-  const handleCopyCode = async () => {
-    try {
-      await navigator.clipboard.writeText(STANDALONE_HTML_CODE);
-      setCopiedCode(true);
-      setTimeout(() => setCopiedCode(false), 2500);
-    } catch {
-      setCopiedCode(false);
+  const handleStartSingleOrResume = () => {
+    const canvas = mountRef.current?.querySelector('canvas');
+    if (canvas && canvas.requestPointerLock && !isTouchDevice) {
+      canvas.requestPointerLock();
     }
+    setIsPlaying(true);
+    setHasStartedOnce(true);
   };
 
-  const handleCopyRoomCode = async () => {
-    if (!roomCode) return;
-    try {
-      await navigator.clipboard.writeText(roomCode);
-      setCopiedRoomCode(true);
-      setTimeout(() => setCopiedRoomCode(false), 2200);
-    } catch {
-      setCopiedRoomCode(false);
-    }
+  const handleCreateRoomClick = () => {
+    actionsRef.current?.createRoom();
+    handleStartSingleOrResume();
   };
 
-  const woodCount = countItemInInventory({ inventory } as PlayerState, BT.WOOD);
-  const plankCount = countItemInInventory({ inventory } as PlayerState, BT.PLANK);
-  const boatCount = countItemInInventory({ inventory } as PlayerState, BT.BOAT);
-  const activeSlotItem = inventory[selectedSlot];
-  const activeItemDef = activeSlotItem ? BD[activeSlotItem.type] : null;
+  const handleJoinRoomSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    actionsRef.current?.joinRoom(joinCodeInput);
+    handleStartSingleOrResume();
+  };
 
-  const handleInventorySlotClick = (idx: number) => {
-    if (swapSourceIdx === null) {
-      if (idx < HOTBAR_SIZE) {
-        actionsRef.current?.selectHotbarSlot(idx);
+  // Touch handlers para Joystick Virtual en móviles
+  const onJoystickTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    const t = e.changedTouches[0];
+    if (!t) return;
+    joyTouchIdRef.current = t.identifier;
+    const rect = e.currentTarget.getBoundingClientRect();
+    joyOriginRef.current = {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+    setJoyKnob({ x: 0, y: 0 });
+    joyVecRef.current = { x: 0, y: 0 };
+  };
+
+  const onJoystickTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    if (joyTouchIdRef.current === null) return;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      if (t.identifier === joyTouchIdRef.current) {
+        const maxR = 42;
+        const dx = t.clientX - joyOriginRef.current.x;
+        const dy = t.clientY - joyOriginRef.current.y;
+        const dist = Math.min(maxR, Math.hypot(dx, dy));
+        const ang = Math.atan2(dy, dx);
+        const kx = Math.cos(ang) * dist;
+        const ky = Math.sin(ang) * dist;
+        setJoyKnob({ x: kx, y: ky });
+        joyVecRef.current = { x: kx / maxR, y: ky / maxR };
+        break;
       }
-      setSwapSourceIdx(idx);
-    } else if (swapSourceIdx === idx) {
-      setSwapSourceIdx(null);
-    } else {
-      actionsRef.current?.swapSlots(swapSourceIdx, idx);
-      if (idx < HOTBAR_SIZE) {
-        actionsRef.current?.selectHotbarSlot(idx);
-      }
-      setSwapSourceIdx(null);
     }
   };
 
-  // Virtual Joystick Touch Handlers
-  const updateJoystickFromPoint = (clientX: number, clientY: number, rect: DOMRect) => {
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    const maxR = rect.width * 0.42;
-    const dx = clientX - cx;
-    const dy = clientY - cy;
-    const dist = Math.hypot(dx, dy);
-    const clamped = Math.min(dist, maxR);
-    const angle = Math.atan2(dy, dx);
-    const kx = dist > 0 ? Math.cos(angle) * clamped : 0;
-    const ky = dist > 0 ? Math.sin(angle) * clamped : 0;
-    setJoyKnob({ x: kx, y: ky });
-    joyVecRef.current = { x: kx / maxR, y: ky / maxR };
+  const onJoystickTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === joyTouchIdRef.current) {
+        joyTouchIdRef.current = null;
+        setJoyKnob({ x: 0, y: 0 });
+        joyVecRef.current = { x: 0, y: 0 };
+        break;
+      }
+    }
   };
+
+  const onLookAreaTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    const t = e.changedTouches[0];
+    if (!t) return;
+    lookTouchRef.current = { id: t.identifier, lastX: t.clientX, lastY: t.clientY };
+  };
+
+  const onLookAreaTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    const currentLook = lookTouchRef.current;
+    if (!currentLook) return;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      if (t.identifier === currentLook.id) {
+        const dx = t.clientX - currentLook.lastX;
+        const dy = t.clientY - currentLook.lastY;
+        currentLook.lastX = t.clientX;
+        currentLook.lastY = t.clientY;
+        camAnglesRef.current.yaw -= dx * 0.0055;
+        camAnglesRef.current.pitch = Math.max(
+          -1.45,
+          Math.min(1.45, camAnglesRef.current.pitch - dy * 0.0055)
+        );
+        break;
+      }
+    }
+  };
+
+  const onLookAreaTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    const currentLook = lookTouchRef.current;
+    if (!currentLook) return;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === currentLook.id) {
+        lookTouchRef.current = null;
+        break;
+      }
+    }
+  };
+
+  const pl = plRef.current;
+  const woodCount = pl ? countItemInInventory(pl, BT.WOOD) : 0;
+  const plankCount = pl ? countItemInInventory(pl, BT.PLANK) : 0;
+  const stickCount = pl ? countItemInInventory(pl, BT.STICK) : 0;
+  const stoneCount = pl ? countItemInInventory(pl, BT.STONE) : 0;
+  const woolCount = pl ? countItemInInventory(pl, BT.WOOL) : 0;
+  const currentClothes =
+    CLOTHES_PALETTE[(pl?.clothesIdx ?? 0) % CLOTHES_PALETTE.length] || CLOTHES_PALETTE[0];
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-[#05070b] select-none font-sans">
-      {/* FULLSCREEN WEBGL CANVAS MOUNT */}
+    <div className="relative w-screen h-screen overflow-hidden bg-slate-950 font-sans select-none">
+      {/* Three.js Fullscreen Canvas Mount */}
+      <div ref={mountRef} className="w-full h-full" />
+
+      {/* Zona táctil de cámara derecha para dispositivos móviles */}
+      {isTouchDevice && isPlaying && (
+        <div
+          onTouchStart={onLookAreaTouchStart}
+          onTouchMove={onLookAreaTouchMove}
+          onTouchEnd={onLookAreaTouchEnd}
+          className="fixed top-16 right-0 bottom-36 w-1/2 z-15"
+        />
+      )}
+
+      {/* Damage Vignette Flash */}
       <div
-        ref={mountRef}
-        className="w-screen h-screen block"
-        onTouchStart={(e) => {
-          if (gameState !== 'playing' || inventoryOpen) return;
-          for (let i = 0; i < e.changedTouches.length; i++) {
-            const t = e.changedTouches[i];
-            if (t.clientX > window.innerWidth * 0.35 && !lookTouchRef.current) {
-              lookTouchRef.current = { id: t.identifier, lastX: t.clientX, lastY: t.clientY };
-            }
-          }
-        }}
-        onTouchMove={(e) => {
-          if (!lookTouchRef.current) return;
-          for (let i = 0; i < e.changedTouches.length; i++) {
-            const t = e.changedTouches[i];
-            if (t.identifier === lookTouchRef.current.id) {
-              const dx = t.clientX - lookTouchRef.current.lastX;
-              const dy = t.clientY - lookTouchRef.current.lastY;
-              lookTouchRef.current.lastX = t.clientX;
-              lookTouchRef.current.lastY = t.clientY;
-              actionsRef.current?.rotateCameraBy(dx * 0.0055, dy * 0.0055);
-            }
-          }
-        }}
-        onTouchEnd={(e) => {
-          const curLook = lookTouchRef.current;
-          if (!curLook) return;
-          for (let i = 0; i < e.changedTouches.length; i++) {
-            if (e.changedTouches[i].identifier === curLook.id) {
-              lookTouchRef.current = null;
-            }
-          }
+        id="dmgOverlay"
+        className="pointer-events-none fixed inset-0 z-10 transition-opacity duration-200 opacity-0"
+        style={{
+          background:
+            'radial-gradient(circle, rgba(220,38,38,0) 45%, rgba(220,38,38,0.65) 100%)',
         }}
       />
 
-      {/* TITLE / MULTIPLAYER ROOMS / PAUSE / GAME OVER OVERLAY */}
-      {gameState !== 'playing' && (
-        <div
-          id="overlay"
-          className="absolute inset-0 z-40 flex flex-col items-center justify-center px-4 py-6 text-slate-100 bg-[radial-gradient(circle_at_50%_35%,rgba(16,36,28,0.86),rgba(6,10,15,0.95))] backdrop-blur-md overflow-y-auto"
-        >
-          <div className="text-[11px] font-semibold tracking-[0.3em] uppercase text-cyan-400 mb-1.5 drop-shadow-[0_0_10px_rgba(34,211,238,0.5)] text-center">
-            Multijugador Online P2P • El Rescate de la Aldea • Supervivencia
-          </div>
-
-          <h1 className="text-4xl md:text-6xl font-black tracking-wider text-emerald-400 drop-shadow-[0_0_24px_rgba(74,222,128,0.55)] mb-1.5 text-center">
-            {gameState === 'gameover' ? 'HAS MUERTO' : 'VOXELWORLD'}
-          </h1>
-
-          <p className="text-xs md:text-sm tracking-[0.16em] uppercase text-cyan-300/90 mb-5 text-center max-w-xl drop-shadow-[0_0_8px_rgba(34,211,238,0.4)]">
-            {gameState === 'gameover'
-              ? 'Los peligros de la noche te han derrotado'
-              : 'La aldea está vacía: fabrica un Bote (5 Tablones), navega por las islas lejanas y rescata a los aldeanos'}
-          </p>
-
-          {/* MULTIPLAYER ROOM BUTTONS: CREAR SALA / UNIRSE A SALA / JUGAR */}
-          <div className="flex flex-wrap items-center justify-center gap-3 mb-4">
-            <button
-              id="btnCreateRoom"
-              type="button"
-              onClick={() => {
-                actionsRef.current?.createMultiplayerRoom();
-              }}
-              className="px-7 py-3.5 rounded-xl font-black text-sm md:text-base tracking-wider uppercase text-emerald-50 bg-emerald-500/25 border border-emerald-400/75 shadow-[0_0_24px_rgba(74,222,128,0.35),inset_0_0_12px_rgba(34,211,238,0.2)] hover:bg-emerald-500/40 hover:scale-105 transition-all cursor-pointer"
-            >
-              📡 Crear Sala
-            </button>
-
-            <button
-              id="btnJoinRoomToggle"
-              type="button"
-              onClick={() => {
-                setRoomMode((prev) => (prev === 'join-input' ? 'none' : 'join-input'));
-              }}
-              className="px-7 py-3.5 rounded-xl font-black text-sm md:text-base tracking-wider uppercase text-cyan-50 bg-cyan-500/25 border border-cyan-400/75 shadow-[0_0_24px_rgba(34,211,238,0.32)] hover:bg-cyan-500/40 hover:scale-105 transition-all cursor-pointer"
-            >
-              🔗 Unirse a Sala
-            </button>
-
-            <button
-              id="btnPlay"
-              type="button"
-              onClick={() => {
-                if (gameState === 'gameover') {
-                  actionsRef.current?.respawnPlayer();
-                } else {
-                  actionsRef.current?.requestPointerLock();
-                }
-              }}
-              className="px-7 py-3.5 rounded-xl font-black text-sm md:text-base tracking-wider uppercase text-slate-100 bg-white/10 border border-white/25 hover:bg-white/20 transition-all cursor-pointer"
-            >
-              {gameState === 'gameover' ? '▶ Reaparecer' : '▶ Jugar Ya'}
-            </button>
-          </div>
-
-          {/* PANEL DE SALA CREADA (CÓDIGO CORTO DE 5 CARACTERES) */}
-          {roomMode === 'created' && roomCode && (
-            <div
-              id="createdRoomPanel"
-              className="mb-5 px-6 py-4 rounded-2xl bg-[#0a0a0f]/80 border border-emerald-400/50 shadow-[0_0_30px_rgba(74,222,128,0.25)] flex flex-col items-center gap-2.5 max-w-md w-full"
-            >
-              <div className="text-[11px] uppercase tracking-widest text-emerald-300 font-bold">
-                Código de tu Sala Multijugador (PeerJS P2P)
-              </div>
-              <div className="flex items-center gap-3">
-                <span
-                  id="roomCodeDisplay"
-                  className="px-5 py-2 rounded-xl bg-black/60 border border-cyan-400/50 font-mono text-2xl font-black tracking-[0.25em] text-cyan-300 drop-shadow-[0_0_10px_rgba(34,211,238,0.6)]"
-                >
-                  {roomCode}
-                </span>
-                <button
-                  type="button"
-                  onClick={handleCopyRoomCode}
-                  className="px-3.5 py-2.5 rounded-xl text-xs font-bold bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 hover:bg-cyan-500/35 cursor-pointer"
-                >
-                  {copiedRoomCode ? '✓ Copiado' : 'Copiar'}
-                </button>
-              </div>
-              <div className="text-[11px] text-slate-400 text-center">
-                Estado: <span className="text-emerald-300 font-semibold">{netStatus}</span>
-              </div>
-              <button
-                id="btnEnterCreatedRoom"
-                type="button"
-                onClick={() => actionsRef.current?.requestPointerLock()}
-                className="w-full mt-1 py-2.5 rounded-xl font-black text-sm uppercase tracking-wider bg-emerald-500/30 text-emerald-100 border border-emerald-400/70 hover:bg-emerald-500/45 cursor-pointer"
-              >
-                ▶ Entrar al Mundo (Sala {roomCode})
-              </button>
-            </div>
-          )}
-
-          {/* PANEL PARA UNIRSE A SALA (INPUT DE CÓDIGO) */}
-          {(roomMode === 'join-input' || roomMode === 'connected') && (
-            <div
-              id="joinRoomPanel"
-              className="mb-5 px-6 py-4 rounded-2xl bg-[#0a0a0f]/80 border border-cyan-400/50 shadow-[0_0_30px_rgba(34,211,238,0.22)] flex flex-col items-center gap-3 max-w-md w-full"
-            >
-              <div className="text-[11px] uppercase tracking-widest text-cyan-300 font-bold">
-                Escribe el Código de Sala de tu Amigo
-              </div>
-              <div className="flex items-center gap-2 w-full">
-                <input
-                  id="inputRoomCode"
-                  type="text"
-                  maxLength={6}
-                  value={joinCodeInput}
-                  onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
-                  placeholder="EJ: VX7K2"
-                  className="flex-1 px-4 py-2.5 rounded-xl bg-black/65 border border-cyan-400/50 font-mono text-lg font-extrabold tracking-[0.2em] text-center text-cyan-200 uppercase focus:outline-none focus:border-emerald-400"
-                />
-                <button
-                  id="btnConnectRoom"
-                  type="button"
-                  onClick={() => {
-                    actionsRef.current?.joinMultiplayerRoom(joinCodeInput);
-                    actionsRef.current?.requestPointerLock();
-                  }}
-                  className="px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider bg-cyan-500/30 text-cyan-100 border border-cyan-400/70 hover:bg-cyan-500/45 cursor-pointer"
-                >
-                  Conectar y Jugar
-                </button>
-              </div>
-              {roomCode && (
-                <div className="text-[11px] text-slate-400">
-                  Estado: <span className="text-cyan-300 font-semibold">{netStatus}</span>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* CONTROLS & RESCUE STORY CARD (Dark Glassmorphism) */}
-          <div className="cg grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2 text-xs text-slate-300 bg-[#0a0a0f]/75 backdrop-blur-md px-6 py-4 rounded-2xl border border-emerald-400/30 shadow-[0_12px_36px_rgba(0,0,0,0.65)] max-w-xl w-full mb-3">
-            <div className="col-span-full text-center text-[11px] font-bold tracking-[0.22em] uppercase text-cyan-400 pb-1.5 mb-1 border-b border-cyan-400/20">
-              Historia de Rescate, Botes y Controles
-            </div>
-            <div>
-              <b className="text-emerald-400">WASD / Joystick</b> — Mover y Navegar en Bote
-            </div>
-            <div>
-              <b className="text-emerald-400">Tecla C (1 Madera)</b> — Craftear 4 Tablones
-            </div>
-            <div>
-              <b className="text-emerald-400">Tecla B (5 Tablones)</b> — Craftear 1 Bote (⛵)
-            </div>
-            <div>
-              <b className="text-emerald-400">Clic Der. en Agua / [F]</b> — Colocar / Subir al Bote
-            </div>
-            <div>
-              <b className="text-emerald-400">Clic en Aldeano (en Bote)</b> — Subir pasajero al Bote
-            </div>
-            <div>
-              <b className="text-emerald-400">Clic en la Aldea (en Bote)</b> — Desembarcar y Rescatar
-            </div>
-            <div className="col-span-full text-center text-[11px] text-cyan-300/90 pt-1.5 border-t border-white/10">
-              🕷️ De noche aparecen Zombies y Arañas saltadoras • 🛡️ Los bloques sólidos bloquean ataques
-            </div>
-          </div>
-
-          <button
-            id="btnViewCode"
-            type="button"
-            onClick={() => setShowCodeModal(true)}
-            className="px-4 py-2 rounded-lg font-bold text-[11px] tracking-wider uppercase text-cyan-200/80 bg-[#0a0a0f]/60 border border-cyan-400/30 hover:bg-cyan-500/20 cursor-pointer"
-          >
-            {'</>'} Ver Código HTML
-          </button>
-        </div>
-      )}
-
-      {/* 1-PLAYER / MULTIPLAYER FULLSCREEN HUD (DARK GLASSMORPHISM) */}
-      <div
-        id="phud1"
-        className={`phud absolute inset-0 pointer-events-none z-20 ${
-          gameState === 'playing' ? 'block' : 'hidden'
-        }`}
-      >
-        {/* Crosshair */}
-        <div className="xh absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[18px] h-[18px]">
-          <span className="absolute left-[8px] top-0 w-[2px] h-[18px] bg-emerald-400 rounded-[1px] shadow-[0_0_8px_rgba(74,222,128,0.9)]" />
-          <span className="absolute top-[8px] left-0 w-[18px] h-[2px] bg-emerald-400 rounded-[1px] shadow-[0_0_8px_rgba(74,222,128,0.9)]" />
-        </div>
-
-        {/* Top-left Info Badge (.inf) + Village Rescue Mission Tracker */}
-        <div
-          id="inf1"
-          className="inf absolute top-4 left-4 bg-[#0a0a0f]/65 backdrop-blur-md px-4 py-2.5 rounded-xl border border-emerald-400/30 shadow-[0_4px_20px_rgba(0,0,0,0.55),0_0_14px_rgba(74,222,128,0.12)] text-xs leading-relaxed text-slate-100 max-w-xs"
-        >
-          <div className="flex items-center justify-between gap-2 font-bold text-emerald-400">
-            <span>🌲 SUPERVIVENCIA</span>
-            <span className="text-cyan-300">{dayPhase}</span>
-          </div>
-
-          {roomCode && (
-            <div className="mt-1 px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-400/30 text-[11px] flex items-center justify-between gap-2">
-              <span className="text-cyan-300 font-mono font-bold">📡 Sala: {roomCode}</span>
-              <span className="text-[10px] text-emerald-300">
-                {connectedPeersCount > 0 ? `🟢 ${connectedPeersCount + 1} Jugadores` : 'Esperando amigo'}
-              </span>
-            </div>
-          )}
-
-          <div className="text-slate-300 font-mono text-[11px] mt-1">
-            XYZ: <span className="text-cyan-300">{coords.x}</span>,{' '}
-            <span className="text-cyan-300">{coords.y}</span>,{' '}
-            <span className="text-cyan-300">{coords.z}</span>
-            {inBoatUI && <span className="ml-2 text-amber-300 font-bold">⛵ Navegando</span>}
-          </div>
-
-          {/* Misión Principal: El Rescate de la Aldea */}
-          <div
-            id="missionTracker"
-            className="mt-1.5 pt-1.5 border-t border-white/10 text-[11px] space-y-0.5"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-amber-300 font-bold">🛟 Rescate Aldea:</span>
-              <span id="rescuedCountBadge" className="text-emerald-400 font-extrabold font-mono">
-                {villagersRescued} / {TOTAL_VILLAGERS_TO_RESCUE} Aldeanos
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2 text-[10px] text-slate-300">
-              <span>🏘️ Aldea Destino:</span>
-              <span className="text-cyan-200 font-mono">
-                {villageDist}m al <b className="text-emerald-300">{villageDir}</b>
-              </span>
-            </div>
-            {hasBoatPassengerUI ? (
-              <div className="text-[10px] text-amber-300 font-bold animate-pulse">
-                ✨ ¡Pasajero a bordo! Navega a la Aldea ({villageDist}m al {villageDir}) y haz clic
-              </div>
-            ) : nearestLostVillagerDist !== null ? (
-              <div className="flex items-center justify-between gap-2 text-[10px] text-slate-300">
-                <span>🧍 Aldeano perdido:</span>
-                <span className="text-amber-200 font-mono">
-                  {nearestLostVillagerDist}m al <b>{nearestLostVillagerDir}</b>
-                </span>
-              </div>
-            ) : (
-              <div className="text-[10px] text-emerald-300 font-bold">
-                🏆 ¡Todos los aldeanos han sido rescatados!
-              </div>
-            )}
-          </div>
-
-          <div className="text-[11px] text-slate-300/90 mt-1 pt-1 border-t border-white/10">
-            En mano:{' '}
-            {activeItemDef ? (
-              <span className="text-emerald-300 font-semibold">
-                {activeItemDef.ic} {activeItemDef.n} (x{activeSlotItem?.count})
-              </span>
-            ) : (
-              <span className="text-slate-400 italic">Mano vacía (Rompe bloques)</span>
-            )}
-          </div>
-        </div>
-
-        {/* Top-right Health Bar (.hpbar) + Quick Survival & Multiplayer Actions */}
-        <div className="absolute top-4 right-4 flex flex-col items-end gap-2">
-          <div
-            id="hp1"
-            className="hpbar flex items-center gap-1 bg-[#0a0a0f]/60 backdrop-blur-md px-3.5 py-2 rounded-xl border border-emerald-400/30 shadow-[0_4px_20px_rgba(0,0,0,0.55),0_0_14px_rgba(74,222,128,0.12)]"
-          >
-            {Array.from({ length: 10 }).map((_, i) => {
-              const full = hp >= (i + 1) * 2;
-              const half = !full && hp >= i * 2 + 1;
-              return (
-                <span
-                  key={i}
-                  className={`text-sm leading-none transition-opacity ${
-                    full
-                      ? 'opacity-100 drop-shadow-[0_0_6px_rgba(239,68,68,0.65)]'
-                      : half
-                        ? 'opacity-65'
-                        : 'opacity-20 grayscale'
-                  }`}
-                >
-                  ❤️
-                </span>
-              );
-            })}
-          </div>
-
-          <div className="flex flex-wrap items-center justify-end gap-1.5 pointer-events-auto">
-            <button
-              id="btnOpenRoomMenu"
-              type="button"
-              onClick={() => {
-                if (document.pointerLockElement) document.exitPointerLock();
-                setGameState('paused');
-              }}
-              className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[#0a0a0f]/60 backdrop-blur-md border border-emerald-400/35 text-emerald-300 hover:bg-emerald-500/20 transition cursor-pointer"
-            >
-              📡 Salas Online {roomCode ? `(${roomCode})` : ''}
-            </button>
-
-            <button
-              id="btnToggleDayNight"
-              type="button"
-              onClick={() => actionsRef.current?.toggleTimeOfDay()}
-              className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[#0a0a0f]/60 backdrop-blur-md border border-cyan-400/30 text-cyan-200 hover:bg-cyan-500/20 transition cursor-pointer"
-            >
-              {isNightUI ? '☀️ Pasar a Día [N]' : '🌙 Pasar a Noche [N]'}
-            </button>
-
-            <button
-              id="btnInventory"
-              type="button"
-              onClick={() => {
-                const next = !inventoryOpen;
-                setInventoryOpen(next);
-                if (next && document.pointerLockElement) {
-                  document.exitPointerLock();
-                }
-              }}
-              className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[#0a0a0f]/60 backdrop-blur-md border border-emerald-400/35 text-emerald-200 hover:bg-emerald-500/20 transition cursor-pointer"
-            >
-              🎒 Inventario ({blocksCollectedCount}) [I]
-            </button>
-
-            <button
-              id="btnToggleTouch"
-              type="button"
-              onClick={() => setIsTouchDevice((prev) => !prev)}
-              className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold backdrop-blur-md border transition cursor-pointer ${
-                isTouchDevice
-                  ? 'bg-cyan-950/75 border-cyan-400/60 text-cyan-200'
-                  : 'bg-[#0a0a0f]/60 border-white/15 text-slate-300'
-              }`}
-            >
-              📱 Táctil {isTouchDevice ? 'ON' : 'OFF'}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                const next = !soundMuted;
-                setSoundMuted(next);
-                soundEngine.setMuted(next);
-              }}
-              className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[#0a0a0f]/60 backdrop-blur-md border border-white/15 text-slate-300 hover:text-cyan-300 transition cursor-pointer"
-            >
-              {soundMuted ? '🔇' : '🔊'}
-            </button>
-          </div>
-        </div>
-
-        {/* Toast Notification */}
-        {toastMsg && (
-          <div
-            id="toast"
-            className="absolute top-20 left-1/2 -translate-x-1/2 bg-[#0a0a0f]/85 backdrop-blur-md text-emerald-300 px-5 py-2.5 rounded-xl font-bold text-xs md:text-sm border border-cyan-400/45 shadow-[0_8px_28px_rgba(0,0,0,0.65),0_0_16px_rgba(74,222,128,0.28)] z-30 text-center max-w-lg"
-          >
-            {toastMsg}
-          </div>
-        )}
-
-        {/* Glassmorphism Survival Crafting & Boat Rescue Bar (Above Hotbar) */}
-        <div className="absolute bottom-[82px] left-1/2 -translate-x-1/2 flex flex-wrap items-center justify-center gap-2 pointer-events-auto w-max max-w-[96vw]">
-          <button
-            id="btnCraftPlanks"
-            type="button"
-            onClick={() => actionsRef.current?.craftPlanks()}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold backdrop-blur-md border transition-all flex items-center gap-1.5 cursor-pointer ${
-              woodCount > 0
-                ? 'bg-emerald-950/80 border-emerald-400/70 text-emerald-200 shadow-[0_0_18px_rgba(74,222,128,0.35)] hover:bg-emerald-900/80'
-                : 'bg-[#0a0a0f]/65 border-white/15 text-slate-300 hover:border-cyan-400/40'
-            }`}
-          >
-            <span>🔨 1 Madera → 4 Tablones [C]</span>
-            <span className="px-1.5 py-0.5 rounded bg-black/40 text-[10px] font-mono text-cyan-300">
-              {woodCount}
-            </span>
-          </button>
-
-          <button
-            id="btnCraftBoat"
-            type="button"
-            onClick={() => actionsRef.current?.craftBoat()}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold backdrop-blur-md border transition-all flex items-center gap-1.5 cursor-pointer ${
-              plankCount >= 5
-                ? 'bg-amber-950/80 border-amber-400/75 text-amber-200 shadow-[0_0_18px_rgba(251,191,36,0.35)] hover:bg-amber-900/80'
-                : 'bg-[#0a0a0f]/65 border-white/15 text-slate-300 hover:border-amber-400/40'
-            }`}
-          >
-            <span>⛵ Craftear Bote: 5 Tablones [B]</span>
-            <span className="px-1.5 py-0.5 rounded bg-black/40 text-[10px] font-mono text-amber-300">
-              {plankCount}/5
-            </span>
-          </button>
-
-          {(boatCount > 0 || inBoatUI) && (
-            <button
-              id="btnBoatAction"
-              type="button"
-              onClick={() => actionsRef.current?.useOrMountBoat()}
-              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-cyan-950/85 backdrop-blur-md border border-cyan-400/70 text-cyan-200 shadow-[0_0_16px_rgba(34,211,238,0.35)] hover:bg-cyan-900/80 transition-all cursor-pointer"
-            >
-              {inBoatUI
-                ? hasBoatPassengerUI
-                  ? '🛟 Entregar Aldeano / Bajar [F]'
-                  : '🛟 Rescatar Aldeano / Bajar [F]'
-                : `⛵ Usar Bote en Agua (${boatCount}) [F]`}
-            </button>
-          )}
-        </div>
-
-        {/* Centered Bottom Hotbar (.hb) with Dark Glassmorphism */}
-        <div
-          id="hb1"
-          className="hb absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-1.5 bg-[#0a0a0f]/60 backdrop-blur-md p-1.5 rounded-xl border border-emerald-400/35 shadow-[0_8px_32px_rgba(0,0,0,0.65),0_0_18px_rgba(34,211,238,0.15)] pointer-events-auto"
-        >
-          {Array.from({ length: HOTBAR_SIZE }).map((_, i) => {
-            const slot = inventory[i];
-            const def = slot ? BD[slot.type] : null;
-            const active = selectedSlot === i;
-            return (
-              <button
-                key={i}
-                type="button"
-                onClick={() => actionsRef.current?.selectHotbarSlot(i)}
-                className={`sl w-[52px] h-[52px] md:w-[54px] md:h-[54px] rounded-lg flex flex-col items-center justify-center relative transition-all cursor-pointer ${
-                  active
-                    ? 'on border-2 border-cyan-400 bg-cyan-400/20 shadow-[0_0_16px_rgba(34,211,238,0.5),inset_0_0_10px_rgba(74,222,128,0.25)] -translate-y-1'
-                    : 'border border-white/15 bg-[#0f141c]/55 hover:border-emerald-400/40'
-                }`}
-              >
-                <span className="kn absolute top-0.5 left-1.5 text-[8px] font-bold text-cyan-400">
-                  {i + 1}
-                </span>
-                {slot && def ? (
-                  <>
-                    <span className="ic text-lg leading-none">{def.ic}</span>
-                    <span className="lb text-[7px] font-bold mt-0.5 text-slate-200 truncate max-w-[46px]">
-                      {def.n}
-                    </span>
-                    <span className="qty absolute bottom-0.5 right-1 text-[9px] font-extrabold font-mono text-emerald-300">
-                      {slot.count}
-                    </span>
-                  </>
-                ) : (
-                  <span className="text-[9px] text-slate-500/70 font-medium">Vacío</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* MOBILE TOUCH CONTROLS (VIRTUAL JOYSTICK & ACTION PAD) */}
-        {isTouchDevice && (
-          <div id="mobileTouchControls" className=" pointer-events-none">
-            {/* Virtual Joystick (Bottom Left) */}
-            <div
-              id="virtualJoystick"
-              className="pointer-events-auto absolute bottom-24 left-6 w-28 h-28 rounded-full bg-[#0a0a0f]/65 backdrop-blur-md border-2 border-emerald-400/45 shadow-[0_0_24px_rgba(0,0,0,0.6)] flex items-center justify-center touch-none"
-              onTouchStart={(e) => {
-                const t = e.changedTouches[0];
-                joyTouchIdRef.current = t.identifier;
-                updateJoystickFromPoint(t.clientX, t.clientY, e.currentTarget.getBoundingClientRect());
-              }}
-              onTouchMove={(e) => {
-                for (let i = 0; i < e.changedTouches.length; i++) {
-                  const t = e.changedTouches[i];
-                  if (t.identifier === joyTouchIdRef.current) {
-                    updateJoystickFromPoint(
-                      t.clientX,
-                      t.clientY,
-                      e.currentTarget.getBoundingClientRect()
-                    );
-                  }
-                }
-              }}
-              onTouchEnd={() => {
-                joyTouchIdRef.current = null;
-                setJoyKnob({ x: 0, y: 0 });
-                joyVecRef.current = { x: 0, y: 0 };
-              }}
-            >
+      {/* Requisito 1: Mensajes de Chat Flotantes sobre la cabeza del personaje (5 segundos) */}
+      <div id="floatingChatContainer" className="pointer-events-none fixed inset-0 z-25 overflow-hidden">
+        {floatingChats.map(
+          (b) =>
+            b.visible && (
               <div
-                className="w-11 h-11 rounded-full bg-emerald-400/45 border-2 border-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.6)] transition-transform duration-75"
+                key={b.id}
                 style={{
-                  transform: `translate(${joyKnob.x}px, ${joyKnob.y}px)`,
+                  left: `${b.screenX}px`,
+                  top: `${b.screenY}px`,
+                  transform: 'translate(-50%, -100%)',
                 }}
-              />
-            </div>
-
-            {/* Mobile Action Buttons (Bottom Right) */}
-            <div className="pointer-events-auto absolute bottom-24 right-6 grid grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                onTouchStart={(e) => {
-                  e.preventDefault();
-                  actionsRef.current?.triggerAttackOrBreak();
-                }}
-                onClick={() => actionsRef.current?.triggerAttackOrBreak()}
-                className="w-14 h-14 rounded-2xl bg-rose-950/75 border border-rose-400/60 text-rose-200 font-bold text-xs flex flex-col items-center justify-center shadow-lg"
+                className="
+                  absolute px-3.5 py-1.5 rounded-2xl
+                  bg-slate-950/85 backdrop-blur-md
+                  border border-cyan-400/50
+                  shadow-[0_0_20px_rgba(34,211,238,0.35)]
+                  text-xs font-medium text-white whitespace-nowrap
+                "
               >
-                <span className="text-base">⛏️</span>
-                <span className="text-[9px]">Romper</span>
-              </button>
-
-              <button
-                type="button"
-                onTouchStart={(e) => {
-                  e.preventDefault();
-                  actionsRef.current?.triggerPlaceOrInteract();
-                }}
-                onClick={() => actionsRef.current?.triggerPlaceOrInteract()}
-                className="w-14 h-14 rounded-2xl bg-cyan-950/75 border border-cyan-400/60 text-cyan-200 font-bold text-xs flex flex-col items-center justify-center shadow-lg"
-              >
-                <span className="text-base">🧱</span>
-                <span className="text-[9px]">Usar/Poner</span>
-              </button>
-
-              <button
-                type="button"
-                onTouchStart={(e) => {
-                  e.preventDefault();
-                  actionsRef.current?.triggerJump();
-                }}
-                onClick={() => actionsRef.current?.triggerJump()}
-                className="w-14 h-14 rounded-2xl bg-emerald-950/75 border border-emerald-400/60 text-emerald-200 font-bold text-xs flex flex-col items-center justify-center shadow-lg"
-              >
-                <span className="text-base">⬆️</span>
-                <span className="text-[9px]">Saltar</span>
-              </button>
-
-              <button
-                type="button"
-                onTouchStart={(e) => {
-                  e.preventDefault();
-                  actionsRef.current?.useOrMountBoat();
-                }}
-                onClick={() => actionsRef.current?.useOrMountBoat()}
-                className="w-14 h-14 rounded-2xl bg-amber-950/75 border border-amber-400/60 text-amber-200 font-bold text-xs flex flex-col items-center justify-center shadow-lg"
-              >
-                <span className="text-base">⛵</span>
-                <span className="text-[9px]">Bote/Resc.</span>
-              </button>
-            </div>
-          </div>
+                <span className="text-cyan-300 font-bold mr-1.5">{b.senderLabel}:</span>
+                <span>{b.text}</span>
+              </div>
+            )
         )}
       </div>
 
-      {/* SURVIVAL INVENTORY & BOAT CRAFTING MODAL ([I] / [E]) */}
-      {inventoryOpen && (
+      {/* Requisito 4: Texto Gigante en Pantalla para Desafío "Luz Roja, Luz Verde" */}
+      {challengeState !== 'off' && (
         <div
-          id="inventoryModal"
-          className="absolute inset-0 z-30 flex items-center justify-center p-4 bg-black/65 backdrop-blur-sm"
+          id="redGreenBanner"
+          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center"
         >
-          <div className="w-full max-w-lg rounded-2xl bg-[#0a0a0f]/90 border border-emerald-400/40 shadow-[0_0_42px_rgba(0,0,0,0.85)] p-5 text-slate-100">
-            <div className="flex items-center justify-between pb-3 mb-4 border-b border-white/10">
-              <div>
-                <h2 className="text-base font-extrabold text-emerald-400 tracking-wide">
-                  🎒 INVENTARIO Y CRAFTEO ({TOTAL_INV_SLOTS} Ranuras)
-                </h2>
-                <p className="text-[11px] text-slate-400">
-                  Haz clic en dos ranuras para organizar tus ítems o fabrica un Bote para el rescate.
-                </p>
-              </div>
+          <div
+            className={`
+              px-8 py-3 rounded-3xl border-2 backdrop-blur-xl font-black tracking-wider uppercase
+              text-2xl sm:text-4xl shadow-2xl transition-all duration-150
+              ${
+                challengeState === 'green'
+                  ? 'bg-emerald-950/80 border-emerald-400 text-emerald-300 shadow-[0_0_45px_rgba(16,185,129,0.75)]'
+                  : 'bg-rose-950/85 border-rose-500 text-rose-300 shadow-[0_0_55px_rgba(244,63,94,0.85)] animate-pulse'
+              }
+            `}
+          >
+            {challengeState === 'green' ? '🟢 ¡LUZ VERDE! — ¡MUÉVETE!' : '🔴 ¡LUZ ROJA! — ¡NO TE MUEVAS!'}
+          </div>
+        </div>
+      )}
+
+      {/* Center Crosshair */}
+      <div className="pointer-events-none fixed inset-0 flex items-center justify-center z-10">
+        <div className="relative w-5 h-5 flex items-center justify-center">
+          <span className="absolute w-4 h-[2px] bg-cyan-300/90 shadow-[0_0_8px_#22d3ee]" />
+          <span className="absolute h-4 w-[2px] bg-cyan-300/90 shadow-[0_0_8px_#22d3ee]" />
+        </div>
+      </div>
+
+      {/* Top HUD Bar — Supervivencia Pura, PvP, Desafío, Ropa y Guardado */}
+      <div className="fixed top-4 inset-x-4 flex flex-wrap items-start justify-between gap-2 z-20 pointer-events-none">
+        {/* Player Status Card */}
+        <div
+          className="
+            inf pointer-events-auto flex flex-col gap-1.5 px-4 py-3 rounded-2xl
+            bg-[rgba(10,10,15,0.65)] backdrop-blur-md
+            border border-emerald-400/25
+            shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_18px_rgba(16,185,129,0.12)]
+            text-xs text-slate-200
+          "
+        >
+          <div className="flex items-center gap-3">
+            <span className="font-bold tracking-wider uppercase text-emerald-400 drop-shadow-[0_0_8px_rgba(52,211,153,0.65)]">
+              ⚔️ Supervivencia & PvP
+            </span>
+            <span className="text-slate-500">|</span>
+            <span id="pos1" className="font-mono text-cyan-300 drop-shadow-[0_0_6px_rgba(34,211,238,0.5)]">
+              0, 10, 0
+            </span>
+            <span className="text-slate-500">|</span>
+            <span id="bones1" className="font-mono text-amber-300">
+              🦴 3
+            </span>
+            <span className="text-slate-500">|</span>
+            <span className="font-mono text-emerald-300">
+              🪵 <span id="woodCountHud">{woodCount}</span> · 📦 <span id="plankCountHud">{plankCount}</span> · 🧶{' '}
+              <span id="woolCountHud">{woolCount}</span>
+            </span>
+          </div>
+          <div id="hp1" className="hpbar flex items-center gap-0.5" />
+
+          {/* Sala Multijugador & Acciones Rápidas */}
+          <div className="flex flex-wrap items-center gap-2 pt-0.5 text-[11px]">
+            {roomCode ? (
+              <span className="px-2 py-0.5 rounded-md bg-cyan-500/20 border border-cyan-400/40 text-cyan-200 font-mono font-bold">
+                🌐 Sala: {roomCode} ({peerCount} jug.)
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded-md bg-slate-800/80 border border-white/10 text-slate-400">
+                👤 Modo Local / P2P Listo
+              </span>
+            )}
+
+            {/* Requisito 7: Botón Cambiar Ropa en el HUD */}
+            <button
+              id="btnChangeClothes"
+              type="button"
+              onClick={() => actionsRef.current?.changeClothes()}
+              className="
+                px-2.5 py-0.5 rounded-lg bg-purple-500/25 hover:bg-purple-500/40
+                border border-purple-400/50 text-purple-200 font-semibold transition cursor-pointer
+                flex items-center gap-1.5
+              "
+            >
+              <span
+                className="w-2.5 h-2.5 rounded-full border border-white/60 inline-block"
+                style={{ backgroundColor: currentClothes.css }}
+              />
+              👕 Cambiar Ropa ({currentClothes.name})
+            </button>
+
+            {/* Requisito 1: Botón de Chat [T] */}
+            <button
+              id="btnOpenChat"
+              type="button"
+              onClick={() => {
+                setIsChatOpen(true);
+                if (document.pointerLockElement) document.exitPointerLock();
+              }}
+              className="
+                px-2.5 py-0.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/35
+                border border-cyan-400/50 text-cyan-200 font-semibold transition cursor-pointer
+              "
+            >
+              💬 Chat [T]
+            </button>
+          </div>
+        </div>
+
+        {/* Panel Central: Anfitrión "Activar Desafío" + Crafteo Rápido + Mesa de Crafteo */}
+        <div
+          className="
+            pointer-events-auto flex flex-col items-center gap-1.5 px-5 py-2.5 rounded-2xl
+            bg-[rgba(10,10,15,0.68)] backdrop-blur-md
+            border border-cyan-400/30
+            shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_20px_rgba(34,211,238,0.16)]
+          "
+        >
+          <div className="flex items-center gap-2">
+            <span
+              id="dn"
+              className="text-xs font-semibold tracking-wide text-emerald-300 drop-shadow-[0_0_8px_rgba(52,211,153,0.6)]"
+            >
+              ☀️ Día
+            </span>
+            <span className="text-slate-600">•</span>
+            <span className="text-[11px] font-medium text-cyan-300">
+              🏝️ Islas Gigantes · 🐎 Caballos · ⚔️ PvP Activo
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-2 pt-0.5">
+            {/* Requisito 4: Botón en el HUD visible para el anfitrión llamado "Activar Desafío" */}
+            {isHost && (
+              <button
+                id="btnStartRedGreenLight"
+                type="button"
+                onClick={() => actionsRef.current?.toggleRedGreenChallenge()}
+                className={`
+                  px-3 py-1 rounded-lg font-bold text-[11px] transition cursor-pointer border
+                  ${
+                    challengeState === 'off'
+                      ? 'bg-rose-500/25 hover:bg-rose-500/40 border-rose-400/60 text-rose-200 shadow-[0_0_12px_rgba(244,63,94,0.35)]'
+                      : 'bg-emerald-500/30 hover:bg-emerald-500/45 border-emerald-400 text-emerald-200'
+                  }
+                `}
+              >
+                {challengeState === 'off' ? '🚦 Activar Desafío' : '⏹️ Detener Desafío'}
+              </button>
+            )}
+
+            <button
+              id="btnCraftPlanksHud"
+              type="button"
+              onClick={() => actionsRef.current?.craftPlanks()}
+              className="
+                px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/35
+                border border-emerald-400/50 text-[11px] font-semibold text-emerald-200
+                transition cursor-pointer
+              "
+            >
+              🪚 1 🪵 ➔ 4 📦 [C]
+            </button>
+
+            <button
+              id="btnCraftTableHud"
+              type="button"
+              onClick={() => actionsRef.current?.craftTable()}
+              className="
+                px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35
+                border border-amber-400/50 text-[11px] font-semibold text-amber-200
+                transition cursor-pointer
+              "
+            >
+              🪑 Crear Mesa (4 📦)
+            </button>
+
+            <button
+              id="btnOpenCraftingTableHud"
+              type="button"
+              onClick={() => actionsRef.current?.toggleCraftingTableModal()}
+              className="
+                px-2.5 py-1 rounded-lg bg-cyan-500/25 hover:bg-cyan-500/40
+                border border-cyan-400/50 text-[11px] font-semibold text-cyan-200
+                transition cursor-pointer
+              "
+            >
+              ⚒️ Mesa de Crafteo
+            </button>
+          </div>
+        </div>
+
+        {/* Guía Rápida & Guardado */}
+        <div
+          className="
+            inf hidden lg:flex flex-col gap-1 px-4 py-2.5 rounded-2xl
+            bg-[rgba(10,10,15,0.65)] backdrop-blur-md
+            border border-white/10 text-[11px] text-slate-300 pointer-events-auto
+          "
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span>
+              <strong className="text-emerald-300">T</strong> Chat ·{' '}
+              <strong className="text-emerald-300">E</strong> Mochila ·{' '}
+              <strong className="text-emerald-300">ESC</strong> Pausa
+            </span>
+            <button
+              type="button"
+              onClick={() => actionsRef.current?.saveGame()}
+              className="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/40 text-emerald-200 font-semibold cursor-pointer"
+            >
+              💾 Guardar
+            </button>
+          </div>
+          <div>
+            <strong className="text-cyan-300">Clic Izq</strong> Romper / PvP (-1 ❤️) ·{' '}
+            <strong className="text-cyan-300">Clic Der</strong> Puerta / Caballo / Mesa
+          </div>
+        </div>
+      </div>
+
+      {/* Floating Notification Toast */}
+      <div
+        id="msg"
+        className="
+          pointer-events-none fixed top-28 left-1/2 -translate-x-1/2 z-20
+          px-5 py-2 rounded-xl
+          bg-[rgba(10,10,15,0.82)] backdrop-blur-md
+          border border-emerald-400/40
+          text-sm font-medium text-emerald-300
+          shadow-[0_0_24px_rgba(16,185,129,0.3)]
+          opacity-0 transition-opacity duration-300
+        "
+      />
+
+      {/* Requisito 1: Input de Chat en Vivo al presionar la tecla T */}
+      {isChatOpen && (
+        <div className="fixed inset-x-0 bottom-28 flex justify-center z-35 px-4">
+          <form
+            id="chatForm"
+            onSubmit={(e) => {
+              e.preventDefault();
+              actionsRef.current?.sendChatMessage(chatInputText);
+            }}
+            className="
+              w-full max-w-lg flex items-center gap-2 p-2.5 rounded-2xl
+              bg-slate-950/90 backdrop-blur-xl border border-cyan-400/50
+              shadow-[0_12px_40px_rgba(0,0,0,0.75),0_0_25px_rgba(34,211,238,0.25)]
+            "
+          >
+            <input
+              id="chatInput"
+              type="text"
+              value={chatInputText}
+              onChange={(e) => setChatInputText(e.target.value)}
+              maxLength={80}
+              placeholder="Escribe un mensaje para mostrar sobre tu cabeza (5s)..."
+              autoFocus
+              className="
+                flex-1 px-3.5 py-2 rounded-xl bg-slate-900/90 border border-white/15
+                text-sm text-white focus:outline-none focus:border-cyan-400
+              "
+            />
+            <button
+              type="submit"
+              className="
+                px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-400 to-emerald-400
+                text-slate-950 font-bold text-xs cursor-pointer
+              "
+            >
+              Enviar
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsChatOpen(false)}
+              className="px-3 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs cursor-pointer"
+            >
+              Cerrar
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* Controles Táctiles Virtuales para Dispositivos Móviles */}
+      {isTouchDevice && isPlaying && (
+        <>
+          <div
+            id="touchJoystick"
+            onTouchStart={onJoystickTouchStart}
+            onTouchMove={onJoystickTouchMove}
+            onTouchEnd={onJoystickTouchEnd}
+            className="
+              fixed bottom-24 left-6 z-25 w-28 h-28 rounded-full
+              bg-slate-950/60 backdrop-blur-md border-2 border-cyan-400/40
+              shadow-[0_0_24px_rgba(34,211,238,0.25)]
+              flex items-center justify-center touch-none
+            "
+          >
+            <div
+              style={{
+                transform: `translate(${joyKnob.x}px, ${joyKnob.y}px)`,
+              }}
+              className="w-12 h-12 rounded-full bg-gradient-to-br from-emerald-400 to-cyan-400 shadow-[0_0_14px_rgba(52,211,153,0.8)]"
+            />
+          </div>
+
+          <div className="fixed bottom-24 right-6 z-25 flex flex-col gap-2.5 touch-none">
+            <div className="flex gap-2.5">
               <button
                 type="button"
-                onClick={() => {
-                  setInventoryOpen(false);
-                  actionsRef.current?.requestPointerLock();
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  actionsRef.current?.touchActionBreak();
                 }}
-                className="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-400/50 hover:bg-emerald-500/35 cursor-pointer"
+                className="w-14 h-14 rounded-2xl bg-rose-500/80 border border-rose-300 text-white font-bold text-xs shadow-lg active:scale-95"
               >
-                Volver al Juego [I]
+                ⛏️/⚔️
+              </button>
+              <button
+                type="button"
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  actionsRef.current?.touchActionPlace();
+                }}
+                className="w-14 h-14 rounded-2xl bg-cyan-500/80 border border-cyan-300 text-white font-bold text-xs shadow-lg active:scale-95"
+              >
+                🧱/🐎
+              </button>
+            </div>
+            <div className="flex gap-2.5">
+              <button
+                type="button"
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  actionsRef.current?.touchJumpStart();
+                }}
+                onTouchEnd={(e) => {
+                  e.stopPropagation();
+                  actionsRef.current?.touchJumpEnd();
+                }}
+                className="w-14 h-14 rounded-2xl bg-emerald-500/80 border border-emerald-300 text-slate-950 font-extrabold text-xs shadow-lg active:scale-95"
+              >
+                ⬆️ Saltar
+              </button>
+              <button
+                type="button"
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  actionsRef.current?.toggleCraftingTableModal();
+                }}
+                className="w-14 h-14 rounded-2xl bg-amber-500/80 border border-amber-300 text-slate-950 font-extrabold text-xs shadow-lg active:scale-95"
+              >
+                🪑 Mesa
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Bottom Centered Hotbar */}
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1.5 pointer-events-auto">
+        <div
+          id="activeBlockLabel"
+          className="
+            px-3.5 py-1 rounded-full
+            bg-[rgba(10,10,15,0.75)] backdrop-blur-md
+            border border-white/10
+            text-[11px] font-medium text-cyan-200 tracking-wide
+          "
+        >
+          🤲 Mano vacía — Rompe bloques (Clic Izq) para recolectar recursos
+        </div>
+        <div
+          id="hb1"
+          className="
+            hb flex items-center gap-1.5 p-2 rounded-2xl
+            bg-[rgba(10,10,15,0.65)] backdrop-blur-md
+            border border-emerald-400/25
+            shadow-[0_12px_36px_rgba(0,0,0,0.55),0_0_20px_rgba(16,185,129,0.15)]
+          "
+        />
+      </div>
+
+      {/* Requisito 6: Modal de Mesa de Crafteo Avanzada (Dark Glassmorphism) */}
+      {isCraftingTableOpen && pl && (
+        <div
+          id="craftingTableModal"
+          className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/75 backdrop-blur-md p-4"
+        >
+          <div
+            className="
+              w-full max-w-2xl p-6 rounded-3xl
+              bg-[rgba(12,14,22,0.92)] backdrop-blur-xl
+              border border-amber-400/40
+              shadow-[0_24px_64px_rgba(0,0,0,0.85),0_0_40px_rgba(245,158,11,0.2)]
+              text-white
+            "
+          >
+            <div className="flex items-center justify-between border-b border-white/10 pb-3 mb-4">
+              <div>
+                <span className="text-[11px] font-mono uppercase tracking-widest text-amber-300">
+                  🪑 Sistema Completo de Mesa de Crafteo
+                </span>
+                <h2 className="text-xl font-extrabold tracking-tight text-white">
+                  Recetas de Supervivencia y Herramientas
+                </h2>
+              </div>
+              <button
+                id="btnCloseCraftingTable"
+                type="button"
+                onClick={() => {
+                  setIsCraftingTableOpen(false);
+                  const canvas = mountRef.current?.querySelector('canvas');
+                  if (!isTouchDevice) canvas?.requestPointerLock?.();
+                }}
+                className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 cursor-pointer"
+              >
+                Cerrar [E]
               </button>
             </div>
 
-            {/* Crafting Section inside Inventory */}
-            <div className="mb-4 p-3 rounded-xl bg-slate-900/80 border border-cyan-400/25 flex flex-col gap-2">
-              <div className="text-xs font-bold text-cyan-300">
-                🔨 Mesa de Crafteo de Supervivencia y Navegación
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
+            {/* Resumen de materiales actuales */}
+            <div className="flex flex-wrap items-center gap-3 mb-4 p-3 rounded-2xl bg-slate-900/80 border border-white/10 text-xs">
+              <span className="text-slate-400 font-semibold">Tus Materiales:</span>
+              <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-amber-300 font-mono">
+                🪵 Madera: {woodCount}
+              </span>
+              <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-emerald-300 font-mono">
+                📦 Tablones: {plankCount}
+              </span>
+              <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-cyan-300 font-mono">
+                🥢 Palos: {stickCount}
+              </span>
+              <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-200 font-mono">
+                🪨 Piedra: {stoneCount}
+              </span>
+              <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-pink-300 font-mono">
+                🧶 Lana: {woolCount}
+              </span>
+            </div>
+
+            {/* Grid de las 6 Recetas Principales + Puerta Doble */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+              {/* 1. Madera -> Tablones */}
+              <div className="p-3.5 rounded-2xl bg-slate-900/75 border border-emerald-400/30 flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-bold text-emerald-300">1. Madera ➔ Tablones</div>
+                  <div className="text-xs text-slate-400">1 🪵 Madera ➔ 4 📦 Tablones</div>
+                </div>
                 <button
+                  id="recipeWoodToPlanks"
                   type="button"
                   onClick={() => actionsRef.current?.craftPlanks()}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-500/25 text-emerald-200 border border-emerald-400/50 hover:bg-emerald-500/40 cursor-pointer"
+                  className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs cursor-pointer shrink-0"
                 >
-                  🪵 1 Madera → 4 Tablones (Tienes: {woodCount})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => actionsRef.current?.craftBoat()}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500/25 text-amber-200 border border-amber-400/50 hover:bg-amber-500/40 cursor-pointer"
-                >
-                  ⛵ 5 Tablones → 1 Bote (Tablones: {plankCount}/5)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => actionsRef.current?.craftDoor()}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 hover:bg-cyan-500/35 cursor-pointer"
-                >
-                  🚪 2 Tablones → 1 Puerta
+                  Craftear
                 </button>
               </div>
-            </div>
 
-            {/* Backpack Slots (9..17) */}
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">
-              Mochila ({BACKPACK_SIZE} ranuras)
-            </div>
-            <div className="grid grid-cols-9 gap-1.5 mb-4">
-              {Array.from({ length: BACKPACK_SIZE }).map((_, idx) => {
-                const slotIdx = HOTBAR_SIZE + idx;
-                const slot = inventory[slotIdx];
-                const def = slot ? BD[slot.type] : null;
-                const isSelectedSwap = swapSourceIdx === slotIdx;
-                return (
-                  <button
-                    key={slotIdx}
-                    type="button"
-                    onClick={() => handleInventorySlotClick(slotIdx)}
-                    className={`h-14 rounded-lg border flex flex-col items-center justify-center relative transition cursor-pointer ${
-                      isSelectedSwap
-                        ? 'border-2 border-amber-400 bg-amber-400/20'
-                        : 'border-white/15 bg-slate-900/70 hover:border-cyan-400/50'
-                    }`}
-                  >
-                    {slot && def ? (
-                      <>
-                        <span className="text-lg leading-none">{def.ic}</span>
-                        <span className="text-[7px] text-slate-300 mt-0.5 truncate max-w-[44px]">
-                          {def.n}
-                        </span>
-                        <span className="absolute bottom-0.5 right-1 text-[9px] font-bold font-mono text-emerald-300">
-                          {slot.count}
-                        </span>
-                      </>
-                    ) : (
-                      <span className="text-[8px] text-slate-600">Vacío</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+              {/* 2. Tablones -> Palos */}
+              <div className="p-3.5 rounded-2xl bg-slate-900/75 border border-amber-400/30 flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-bold text-amber-300">2. Tablones ➔ Palos</div>
+                  <div className="text-xs text-slate-400">2 📦 Tablones ➔ 4 🥢 Palos</div>
+                </div>
+                <button
+                  id="recipePlanksToSticks"
+                  type="button"
+                  onClick={() => actionsRef.current?.craftSticks()}
+                  className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs cursor-pointer shrink-0"
+                >
+                  Craftear
+                </button>
+              </div>
 
-            {/* Hotbar Slots (0..8) */}
-            <div className="text-[11px] font-bold uppercase tracking-wider text-cyan-400 mb-2">
-              Barra de Acceso Rápido (Teclas 1–9)
-            </div>
-            <div className="grid grid-cols-9 gap-1.5">
-              {Array.from({ length: HOTBAR_SIZE }).map((_, slotIdx) => {
-                const slot = inventory[slotIdx];
-                const def = slot ? BD[slot.type] : null;
-                const isSelectedSwap = swapSourceIdx === slotIdx;
-                const isEquipped = selectedSlot === slotIdx;
-                return (
-                  <button
-                    key={slotIdx}
-                    type="button"
-                    onClick={() => handleInventorySlotClick(slotIdx)}
-                    className={`h-14 rounded-lg border flex flex-col items-center justify-center relative transition cursor-pointer ${
-                      isSelectedSwap
-                        ? 'border-2 border-amber-400 bg-amber-400/20'
-                        : isEquipped
-                          ? 'border-2 border-cyan-400 bg-cyan-400/20'
-                          : 'border-white/15 bg-slate-900/70 hover:border-emerald-400/50'
-                    }`}
-                  >
-                    <span className="absolute top-0.5 left-1 text-[8px] font-bold text-cyan-400">
-                      {slotIdx + 1}
-                    </span>
-                    {slot && def ? (
-                      <>
-                        <span className="text-lg leading-none">{def.ic}</span>
-                        <span className="text-[7px] text-slate-200 mt-0.5 truncate max-w-[44px]">
-                          {def.n}
-                        </span>
-                        <span className="absolute bottom-0.5 right-1 text-[9px] font-bold font-mono text-emerald-300">
-                          {slot.count}
-                        </span>
-                      </>
-                    ) : (
-                      <span className="text-[8px] text-slate-600">Vacío</span>
-                    )}
-                  </button>
-                );
-              })}
+              {/* 3. Tablones + Palos -> Pico de madera */}
+              <div className="p-3.5 rounded-2xl bg-slate-900/75 border border-cyan-400/30 flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-bold text-cyan-300">3. Pico de Madera (x2)</div>
+                  <div className="text-xs text-slate-400">3 📦 Tablones + 2 🥢 Palos ➔ ⛏️ Pico</div>
+                </div>
+                <button
+                  id="recipeWoodPickaxe"
+                  type="button"
+                  onClick={() => actionsRef.current?.craftWoodPickaxe()}
+                  className="px-3.5 py-2 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-bold text-xs cursor-pointer shrink-0"
+                >
+                  Craftear
+                </button>
+              </div>
+
+              {/* 4. Piedra + Palos -> Pico de piedra */}
+              <div className="p-3.5 rounded-2xl bg-slate-900/75 border border-indigo-400/30 flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-bold text-indigo-300">4. Pico de Piedra (x3)</div>
+                  <div className="text-xs text-slate-400">3 🪨 Piedras + 2 🥢 Palos ➔ ⚒️ Pico</div>
+                </div>
+                <button
+                  id="recipeStonePickaxe"
+                  type="button"
+                  onClick={() => actionsRef.current?.craftStonePickaxe()}
+                  className="px-3.5 py-2 rounded-xl bg-indigo-400 hover:bg-indigo-300 text-slate-950 font-bold text-xs cursor-pointer shrink-0"
+                >
+                  Craftear
+                </button>
+              </div>
+
+              {/* 5. Tablones -> Bote */}
+              <div className="p-3.5 rounded-2xl bg-slate-900/75 border border-sky-400/30 flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-bold text-sky-300">5. Tablones ➔ Bote</div>
+                  <div className="text-xs text-slate-400">5 📦 Tablones ➔ 1 ⛵ Bote</div>
+                </div>
+                <button
+                  id="recipeBoat"
+                  type="button"
+                  onClick={() => actionsRef.current?.craftBoat()}
+                  className="px-3.5 py-2 rounded-xl bg-sky-400 hover:bg-sky-300 text-slate-950 font-bold text-xs cursor-pointer shrink-0"
+                >
+                  Craftear
+                </button>
+              </div>
+
+              {/* 6. 3 Lanas + 3 Tablones -> Cama */}
+              <div className="p-3.5 rounded-2xl bg-slate-900/75 border border-rose-400/30 flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-bold text-rose-300">6. 3 Lanas + 3 Tablones ➔ Cama</div>
+                  <div className="text-xs text-slate-400">3 🧶 Lanas + 3 📦 Tablones ➔ 🛏️ Cama</div>
+                </div>
+                <button
+                  id="recipeBed"
+                  type="button"
+                  onClick={() => actionsRef.current?.craftBed()}
+                  className="px-3.5 py-2 rounded-xl bg-rose-400 hover:bg-rose-300 text-slate-950 font-bold text-xs cursor-pointer shrink-0"
+                >
+                  Craftear
+                </button>
+              </div>
+
+              {/* Extra: Puerta de 2 bloques */}
+              <div className="p-3.5 rounded-2xl bg-slate-900/75 border border-amber-300/30 flex items-center justify-between gap-2 sm:col-span-2">
+                <div>
+                  <div className="text-sm font-bold text-amber-200">
+                    7. Puerta Interactiva de 2 Bloques
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    2 📦 Tablones ➔ 1 🚪 Puerta Doble (Ocupa 2 bloques de alto y abre/cierra con Clic Der)
+                  </div>
+                </div>
+                <button
+                  id="recipeDoor"
+                  type="button"
+                  onClick={() => actionsRef.current?.craftDoor()}
+                  className="px-3.5 py-2 rounded-xl bg-amber-300 hover:bg-amber-200 text-slate-950 font-bold text-xs cursor-pointer shrink-0"
+                >
+                  Craftear Puerta
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* STANDALONE HTML SOURCE MODAL */}
-      {showCodeModal && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="w-full max-w-4xl max-h-[85vh] flex flex-col rounded-2xl bg-[#0a0d14] border border-emerald-400/40 shadow-[0_0_48px_rgba(0,0,0,0.85)] overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/10 bg-[#0f141e]">
+      {/* Modal de Inventario y Mochila (Tecla E) */}
+      {isInventoryOpen && pl && (
+        <div
+          id="inventoryModal"
+          className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/70 backdrop-blur-md p-4"
+        >
+          <div
+            className="
+              w-full max-w-xl p-6 rounded-3xl
+              bg-[rgba(12,14,22,0.9)] backdrop-blur-xl
+              border border-emerald-400/35
+              shadow-[0_24px_64px_rgba(0,0,0,0.85)]
+              text-white
+            "
+          >
+            <div className="flex items-center justify-between border-b border-white/10 pb-3 mb-4">
               <div>
-                <h2 className="text-sm font-bold text-emerald-400 tracking-wider uppercase">
-                  Código HTML — VoxelWorld Multijugador Online & Rescate de la Aldea
+                <span className="text-[11px] font-mono uppercase tracking-widest text-emerald-400">
+                  Supervivencia & Crafteo Básico
+                </span>
+                <h2 className="text-xl font-extrabold tracking-tight text-white">
+                  🎒 Mochila e Inventario
                 </h2>
-                <p className="text-xs text-slate-400">
-                  Incluye salas PeerJS P2P, Arañas nocturnas, Botes (5 Tablones), rescate de aldeanos y controles móviles
-                </p>
               </div>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={handleCopyCode}
-                  className="px-4 py-1.5 rounded-lg text-xs font-bold bg-emerald-500/25 text-emerald-300 border border-emerald-400/50 hover:bg-emerald-500/40 transition cursor-pointer"
+                  onClick={() => {
+                    setIsInventoryOpen(false);
+                    setIsCraftingTableOpen(true);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-amber-500/25 border border-amber-400/50 text-xs font-semibold text-amber-200 cursor-pointer"
                 >
-                  {copiedCode ? '✓ ¡Copiado!' : 'Copiar HTML'}
+                  🪑 Abrir Mesa Avanzada
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowCodeModal(false)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-800 text-slate-300 hover:bg-slate-700 transition cursor-pointer"
+                  onClick={() => {
+                    setIsInventoryOpen(false);
+                    setSelectedSwapSlot(null);
+                    const canvas = mountRef.current?.querySelector('canvas');
+                    if (!isTouchDevice) canvas?.requestPointerLock?.();
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 cursor-pointer"
                 >
-                  Cerrar ✕
+                  Cerrar [E]
                 </button>
               </div>
             </div>
-            <pre className="p-4 text-xs font-mono text-slate-300 overflow-auto flex-1 select-all leading-relaxed">
-              {STANDALONE_HTML_CODE}
-            </pre>
+
+            {/* Mochila Superior (Slots 9..17) */}
+            <div className="mb-4">
+              <div className="text-xs font-semibold text-slate-400 mb-2">
+                Mochila (Haz clic en dos casillas para intercambiar objetos)
+              </div>
+              <div className="grid grid-cols-9 gap-2">
+                {Array.from({ length: TOTAL_INV_SLOTS - HOTBAR_SIZE }, (_, i) => {
+                  const idx = i + HOTBAR_SIZE;
+                  const slot = pl.inventory[idx];
+                  const d = slot && slot.count > 0 ? BD[slot.type] : null;
+                  const isSelected = selectedSwapSlot === idx;
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => actionsRef.current?.handleSlotClick(idx)}
+                      className={`
+                        relative h-12 rounded-xl flex flex-col items-center justify-center border transition cursor-pointer
+                        ${
+                          isSelected
+                            ? 'bg-cyan-500/30 border-cyan-300 scale-105'
+                            : 'bg-slate-900/80 border-white/10 hover:border-white/30'
+                        }
+                      `}
+                    >
+                      <span className="text-lg">{d ? d.ic : '·'}</span>
+                      {slot && slot.count > 0 && (
+                        <span className="absolute bottom-0.5 right-1 text-[10px] font-mono font-bold text-amber-300">
+                          {slot.count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Barra Rápida Hotbar (Slots 0..8) */}
+            <div>
+              <div className="text-xs font-semibold text-emerald-300 mb-2">
+                Barra Rápida (Hotbar 1 - 9)
+              </div>
+              <div className="grid grid-cols-9 gap-2">
+                {Array.from({ length: HOTBAR_SIZE }, (_, idx) => {
+                  const slot = pl.inventory[idx];
+                  const d = slot && slot.count > 0 ? BD[slot.type] : null;
+                  const isSelected = selectedSwapSlot === idx;
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => actionsRef.current?.handleSlotClick(idx)}
+                      className={`
+                        relative h-12 rounded-xl flex flex-col items-center justify-center border transition cursor-pointer
+                        ${
+                          isSelected
+                            ? 'bg-cyan-500/30 border-cyan-300 scale-105'
+                            : idx === pl.si
+                              ? 'bg-emerald-500/20 border-emerald-400'
+                              : 'bg-slate-900/80 border-white/15 hover:border-white/35'
+                        }
+                      `}
+                    >
+                      <span className="absolute top-0.5 left-1.5 text-[9px] font-mono text-slate-400">
+                        {idx + 1}
+                      </span>
+                      <span className="text-lg">{d ? d.ic : '·'}</span>
+                      {slot && slot.count > 0 && (
+                        <span className="absolute bottom-0.5 right-1 text-[10px] font-mono font-bold text-amber-300">
+                          {slot.count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Wolf Naming Modal */}
+      {wolfModal.open && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/70 backdrop-blur-md">
+          <div
+            className="
+              w-full max-w-sm p-6 rounded-3xl
+              bg-[rgba(12,14,22,0.9)] backdrop-blur-xl
+              border border-amber-400/40
+              shadow-[0_20px_50px_rgba(0,0,0,0.8)]
+              text-center text-white
+            "
+          >
+            <div className="text-3xl mb-2">🐕</div>
+            <h2 className="text-lg font-bold text-amber-300 mb-1">¡Domesticar Lobo Guardián!</h2>
+            <p className="text-xs text-slate-300 mb-4">
+              Elige un nombre para tu compañero. Te seguirá y atacará a los Zombies y Arañas de noche.
+            </p>
+            <input
+              type="text"
+              value={wolfNameInput}
+              onChange={(e) => setWolfNameInput(e.target.value)}
+              maxLength={16}
+              className="
+                w-full px-3.5 py-2 rounded-xl mb-4
+                bg-slate-900/90 border border-white/15
+                text-sm text-center text-white font-semibold
+                focus:outline-none focus:border-amber-400
+              "
+              autoFocus
+            />
+            <div className="flex gap-2 justify-center">
+              <button
+                type="button"
+                onClick={() => actionsRef.current?.cancelWolfName()}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => actionsRef.current?.confirmWolfName(wolfNameInput)}
+                className="px-5 py-2 rounded-xl bg-gradient-to-r from-amber-400 to-orange-400 text-xs font-bold text-slate-950 cursor-pointer"
+              >
+                Domesticar (1 🦴)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Menú Principal / Pausa: Crear Sala, Unirse a Sala, Instalar Juego (PWA) y Guardar Partida */}
+      {!isPlaying && !wolfModal.open && !isInventoryOpen && !isCraftingTableOpen && !isChatOpen && (
+        <div
+          id="ov"
+          className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4"
+        >
+          <div
+            className="
+              max-w-lg w-full p-7 rounded-3xl
+              bg-[rgba(10,12,20,0.88)] backdrop-blur-xl
+              border border-emerald-400/35
+              shadow-[0_24px_64px_rgba(0,0,0,0.85),0_0_40px_rgba(16,185,129,0.2)]
+              text-center text-white
+            "
+          >
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-emerald-300 text-xs font-semibold mb-2">
+              🌍 Supervivencia Pura · PvP · Luz Roja Luz Verde · PWA
+            </div>
+            <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-emerald-300 via-teal-200 to-cyan-300 bg-clip-text text-transparent mb-2">
+              VoxelWorld
+            </h1>
+            <p className="text-xs text-slate-300 leading-relaxed mb-4">
+              Explora <strong className="text-emerald-300">Islas Gigantes y Continentes</strong>, monta{' '}
+              <strong className="text-amber-300">Caballos (🐎)</strong>, construye con{' '}
+              <strong className="text-cyan-300">Puertas Dobles de 2 Bloques</strong> y compite en{' '}
+              <strong className="text-rose-300">PvP y Luz Roja, Luz Verde</strong>.
+            </p>
+
+            {pwaInstallBannerMsg && (
+              <div className="mb-3 p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-400/50 text-xs text-emerald-200">
+                {pwaInstallBannerMsg}
+              </div>
+            )}
+
+            {/* Requisito 3: Botón "Instalar Juego" (PWA) y "Guardar Partida" */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-3">
+              <button
+                id="btnInstallPWA"
+                type="button"
+                onClick={handleInstallPWAClick}
+                className="
+                  py-2.5 px-4 rounded-2xl font-bold text-xs text-slate-950
+                  bg-gradient-to-r from-amber-300 via-yellow-300 to-emerald-300
+                  hover:from-amber-200 hover:to-emerald-200
+                  shadow-[0_0_24px_rgba(251,191,36,0.45)]
+                  transition cursor-pointer flex items-center justify-center gap-1.5
+                "
+              >
+                📲 Instalar Juego
+              </button>
+
+              <button
+                id="btnSaveGame"
+                type="button"
+                onClick={() => actionsRef.current?.saveGame()}
+                className="
+                  py-2.5 px-4 rounded-2xl font-bold text-xs text-emerald-200
+                  bg-emerald-500/25 hover:bg-emerald-500/40
+                  border border-emerald-400/50
+                  transition cursor-pointer flex items-center justify-center gap-1.5
+                "
+              >
+                💾 Guardar Partida {hasSavedGame ? '✓' : ''}
+              </button>
+            </div>
+
+            {/* Botones Multijugador PeerJS: Crear Sala y Unirse a Sala */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+              <button
+                id="btnCreateRoom"
+                type="button"
+                onClick={handleCreateRoomClick}
+                className="
+                  py-3 px-4 rounded-2xl font-bold text-sm text-slate-950
+                  bg-gradient-to-r from-emerald-400 to-teal-300
+                  hover:from-emerald-300 hover:to-teal-200
+                  shadow-[0_0_24px_rgba(52,211,153,0.45)]
+                  transition cursor-pointer
+                "
+              >
+                📡 Crear Sala (Host)
+              </button>
+
+              <button
+                id="btnOpenJoinRoom"
+                type="button"
+                onClick={() => setShowJoinModal((v) => !v)}
+                className="
+                  py-3 px-4 rounded-2xl font-bold text-sm text-cyan-200
+                  bg-cyan-500/20 hover:bg-cyan-500/35
+                  border border-cyan-400/50
+                  shadow-[0_0_20px_rgba(34,211,238,0.25)]
+                  transition cursor-pointer
+                "
+              >
+                🔗 Unirse a Sala
+              </button>
+            </div>
+
+            {/* Input desplegable para escribir el código de sala */}
+            {showJoinModal && (
+              <form
+                onSubmit={handleJoinRoomSubmit}
+                className="mb-3 p-3.5 rounded-2xl bg-slate-900/90 border border-cyan-400/40 flex flex-col sm:flex-row gap-2"
+              >
+                <input
+                  id="inputRoomCode"
+                  type="text"
+                  value={joinCodeInput}
+                  onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+                  placeholder="Código (ej. K7M9P)"
+                  maxLength={6}
+                  className="
+                    flex-1 px-3.5 py-2 rounded-xl bg-slate-950 border border-white/15
+                    text-center font-mono text-sm uppercase tracking-widest text-cyan-300
+                    focus:outline-none focus:border-cyan-400
+                  "
+                />
+                <button
+                  id="btnConnectRoom"
+                  type="submit"
+                  className="px-5 py-2 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-bold text-xs cursor-pointer"
+                >
+                  Conectar P2P
+                </button>
+              </form>
+            )}
+
+            {roomCode && (
+              <div className="mb-3 py-2 px-3 rounded-xl bg-cyan-500/15 border border-cyan-400/35 text-xs text-cyan-200">
+                Código de Sala Activo:{' '}
+                <strong className="font-mono text-sm text-white tracking-widest">{roomCode}</strong>{' '}
+                ({mpStatus === 'hosting' ? 'Esperando amigos...' : 'Conectado'})
+              </div>
+            )}
+
+            {mpError && <div className="mb-3 text-xs text-rose-400 font-medium">{mpError}</div>}
+
+            <button
+              id="startBtn"
+              type="button"
+              onClick={handleStartSingleOrResume}
+              className="
+                w-full py-3 rounded-2xl font-bold text-sm text-white
+                bg-slate-800/90 hover:bg-slate-700/90 border border-white/15
+                transition cursor-pointer
+              "
+            >
+              {hasStartedOnce ? '▶️ Reanudar Partida' : '🎮 Jugar en Solitario'}
+            </button>
           </div>
         </div>
       )}
     </div>
   );
 }
+
+export default App;
