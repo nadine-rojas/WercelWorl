@@ -1,0 +1,6 @@
+{
+  "name": "VoxelWorld — 1 Jugador",
+  "description": "Juego sandbox voxel 3D en primera persona con Three.js, controles Pointer Lock, ciclo día/noche, aldea, lobos domesticables, enemigos e interfaz Dark Glassmorphism.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
