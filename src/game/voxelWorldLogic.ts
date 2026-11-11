@@ -24,6 +24,14 @@ export const BT = {
   WOOD_PICKAXE: 22,
   STONE_PICKAXE: 23,
   DOOR_OPEN: 24,
+  WOOD_SWORD: 25,
+  STONE_SWORD: 26,
+  CHEST: 27,
+  TORCH: 28,
+  PUDDLE: 29,
+  GOLD: 30,
+  DIAMOND: 31,
+  CHAIR: 32,
 } as const;
 
 export type BlockType = (typeof BT)[keyof typeof BT];
@@ -42,31 +50,39 @@ export interface BlockDef {
 export const BD: Record<number, BlockDef> = {
   1: { n: 'Pasto', c: 0x5dbb40, ic: '🟩', role: 'Terreno natural' },
   2: { n: 'Tierra', c: 0x9b6b3a, ic: '🟫', role: 'Base de suelo' },
-  3: { n: 'Piedra', c: 0x7a7a7a, ic: '🪨', role: 'Muro y herramientas' },
+  3: { n: 'Piedra', c: 0x7a7a7a, ic: '🪨', role: 'Muro y herramientas 16x16' },
   4: { n: 'Arena', c: 0xe8d68a, ic: '🟨', role: 'Costa y océano' },
-  5: { n: 'Madera', c: 0x7a5230, ic: '🪵', role: 'Tronco para craftear' },
-  6: { n: 'Hojas', c: 0x2e7020, ic: '🌿', tr: 1, op: 0.85, role: 'Follaje de árbol' },
+  5: { n: 'Madera', c: 0x7a5230, ic: '🪵', role: 'Tronco con vetas 16x16' },
+  6: { n: 'Hojas', c: 0x2e7020, ic: '🌿', tr: 1, op: 0.88, role: 'Follaje de árbol' },
   7: { n: 'Nieve', c: 0xf0f0f8, ic: '❄️', role: 'Cumbre helada' },
-  8: { n: 'Agua', c: 0x1a55cc, ic: '💧', tr: 1, op: 0.58, role: 'Océano profundo' },
+  8: { n: 'Agua', c: 0x1a66dd, ic: '💧', tr: 1, op: 0.68, role: 'Agua con reflejo' },
   9: { n: 'Vidrio', c: 0xaaddff, ic: '🔷', tr: 1, op: 0.42, role: 'Ventana cristalina' },
   10: { n: 'Lava', c: 0xff4400, ic: '🔥', em: 0x661800, role: 'Magma luminoso' },
   11: { n: 'Roca Madre', c: 0x333333, ic: '⬛', role: 'Fondo abisal' },
-  12: { n: 'Tablones', c: 0xcc9955, ic: '📦', role: 'Construcción y crafteo' },
-  13: { n: 'Adoquín', c: 0x888888, ic: '🧱', role: 'Piedra labrada' },
-  14: { n: 'Ladrillo', c: 0xcc5533, ic: '🧱', role: 'Pared reforzada' },
+  12: { n: 'Tablones', c: 0xcc9955, ic: '📦', role: 'Tablas con clavos 16x16' },
+  13: { n: 'Adoquín', c: 0x888888, ic: '🧱', role: 'Piedra agrietada 16x16' },
+  14: { n: 'Ladrillo', c: 0xcc5533, ic: '🧱', role: 'Pared de ladrillos clásica' },
   15: { n: 'Cama', c: 0xdd3333, ic: '🛏️', role: 'Descanso nocturno' },
-  16: { n: 'Mesa de Crafteo', c: 0xbb8833, ic: '🪑', role: 'Menú de crafteo avanzado' },
+  16: { n: 'Mesa', c: 0xbb8833, ic: '🪑', role: 'Mesa de Crafteo / Decoración' },
   17: { n: 'Hielo', c: 0xaaddff, ic: '🧊', tr: 1, op: 0.78, role: 'Superficie glaciar' },
-  18: { n: 'Puerta', c: 0x996633, ic: '🚪', role: 'Puerta doble de 2 bloques' },
+  18: { n: 'Puerta Doble', c: 0x996633, ic: '🚪', role: 'Puerta interactiva de 2 bloques' },
   19: { n: 'Bote', c: 0x9c6630, ic: '⛵', role: 'Navegación rápida', isItemOnly: true },
   20: { n: 'Lana', c: 0xf5f5f5, ic: '🧶', role: 'Drop de oveja para Cama' },
-  21: { n: 'Palos', c: 0x8b5a2b, ic: '🥢', role: 'Mango de herramientas', isItemOnly: true },
+  21: { n: 'Palos', c: 0x8b5a2b, ic: '🥢', role: 'Mango de herramientas y armas', isItemOnly: true },
   22: { n: 'Pico de Madera', c: 0xc68b59, ic: '⛏️', role: 'Pica piedra rápido (x2)', isItemOnly: true },
   23: { n: 'Pico de Piedra', c: 0x94a3b8, ic: '⚒️', role: 'Pica piedra muy rápido (x3)', isItemOnly: true },
   24: { n: 'Puerta Abierta', c: 0x996633, ic: '🚪', tr: 1, op: 0.9, role: 'Puerta abierta (paso libre)' },
+  25: { n: 'Espada de Madera', c: 0xd97706, ic: '🗡️', role: 'Arma PvP y combate (4 ❤️ daño)', isItemOnly: true },
+  26: { n: 'Espada de Piedra', c: 0x64748b, ic: '⚔️', role: 'Arma letal PvP y combate (6 ❤️ daño)', isItemOnly: true },
+  27: { n: 'Cofre', c: 0xb45309, ic: '🧰', role: 'Almacenamiento reforzado de madera' },
+  28: { n: 'Antorcha', c: 0xfbbf24, ic: '🕯️', em: 0xff9900, role: 'Emite luz dinámica en la noche' },
+  29: { n: 'Charco de Agua', c: 0x38bdf8, ic: '💦', tr: 1, op: 0.55, role: 'Charco formado por la lluvia' },
+  30: { n: 'Bloque de Oro', c: 0xfacc15, ic: '🟨', role: 'Oro brillante (Batalla de Construcción)' },
+  31: { n: 'Bloque de Diamante', c: 0x22d3ee, ic: '💎', role: 'Diamante puro (Batalla de Construcción)' },
+  32: { n: 'Silla', c: 0xd97706, ic: '🪑', role: 'Silla decorativa de madera' },
 };
 
-// Nota: BT.DOOR_OPEN (24) NO está en SOLID_SET para que el jugador pueda atravesarla al abrirla
+// Nota: BT.DOOR_OPEN (24), BT.TORCH (28) y BT.PUDDLE (29) NO están en SOLID_SET para permitir paso libre
 export const SOLID_SET = new Set<number>([
   BT.GRASS,
   BT.DIRT,
@@ -83,6 +99,10 @@ export const SOLID_SET = new Set<number>([
   BT.ICE,
   BT.DOOR,
   BT.WOOL,
+  BT.CHEST,
+  BT.GOLD,
+  BT.DIAMOND,
+  BT.CHAIR,
 ]);
 
 export const CHUNK_SIZE = 16;
@@ -176,7 +196,8 @@ export interface EntityData {
     | 'sheep'
     | 'chicken'
     | 'horse'
-    | 'enderman';
+    | 'enderman'
+    | 'villager';
   pos: Vec3Like;
   vel: Vec3Like;
   state: 'idle' | 'chase' | 'windup' | 'ko';
@@ -191,7 +212,22 @@ export interface EntityData {
   wname?: string;
   jumpCd?: number;
   riddenByPlayer?: boolean;
+  rescued?: boolean;
+  vname?: string;
 }
+
+export interface LostVillagerSpawn {
+  id: number;
+  name: string;
+  x: number;
+  z: number;
+}
+
+export const LOST_VILLAGER_SPAWNS: LostVillagerSpawn[] = [
+  { id: 901, name: 'Aldeano Kael', x: 78, z: -64 },
+  { id: 902, name: 'Aldeana Lyra', x: -86, z: 74 },
+  { id: 903, name: 'Aldeano Atlas', x: 96, z: 88 },
+];
 
 /**
  * Genera un código corto de sala (5 caracteres alfanuméricos en mayúsculas)
@@ -281,6 +317,14 @@ export function getH(x: number, z: number): number {
     const gentleHills = ni(x, z, 0.06, 101) * 3.0;
     const falloff = Math.max(0, 1 - distSpawn / 28);
     return Math.floor(SEA + 2 + falloff * 2.2 + gentleHills * 0.65);
+  }
+
+  // Islas lejanas donde se encuentran los aldeanos perdidos para rescatar
+  for (const lv of LOST_VILLAGER_SPAWNS) {
+    const dLv = Math.hypot(x - lv.x, z - lv.z);
+    if (dLv < 9) {
+      return SEA + 3;
+    }
   }
 
   // Escala continental muy amplia (frecuencia 0.0048) para formar islas gigantes y continentes masivos
@@ -782,7 +826,110 @@ export function craftPlanksToDoorLogic(pl: PlayerState): {
   }
   addItemToInventory(pl, BT.DOOR, 1);
   pl.score += 15;
+  const idx = pl.inventory.findIndex((s) => s && s.type === BT.DOOR && iInHotbar(s));
+  if (idx >= 0 && idx < HOTBAR_SIZE) pl.si = idx;
   return { crafted: true };
+}
+
+/**
+ * Receta Mesa Avanzada: 2 Tablones + 1 Palo ➔ 1 Espada de Madera (BT.WOOD_SWORD) para PvP y combate
+ */
+export function craftWoodSwordLogic(pl: PlayerState): {
+  crafted: boolean;
+} {
+  if (
+    countItemInInventory(pl, BT.PLANK) < 2 ||
+    countItemInInventory(pl, BT.STICK) < 1
+  ) {
+    return { crafted: false };
+  }
+  consumeItemFromInventory(pl, BT.PLANK, 2);
+  consumeItemFromInventory(pl, BT.STICK, 1);
+  addItemToInventory(pl, BT.WOOD_SWORD, 1);
+  pl.score += 30;
+  const idx = pl.inventory.findIndex((s) => s && s.type === BT.WOOD_SWORD && iInHotbar(s));
+  if (idx >= 0 && idx < HOTBAR_SIZE) pl.si = idx;
+  return { crafted: true };
+}
+
+/**
+ * Receta Mesa Avanzada: 2 Piedras + 1 Palo ➔ 1 Espada de Piedra (BT.STONE_SWORD) para PvP y combate
+ */
+export function craftStoneSwordLogic(pl: PlayerState): {
+  crafted: boolean;
+} {
+  if (
+    countItemInInventory(pl, BT.STONE) < 2 ||
+    countItemInInventory(pl, BT.STICK) < 1
+  ) {
+    return { crafted: false };
+  }
+  consumeItemFromInventory(pl, BT.STONE, 2);
+  consumeItemFromInventory(pl, BT.STICK, 1);
+  addItemToInventory(pl, BT.STONE_SWORD, 1);
+  pl.score += 45;
+  const idx = pl.inventory.findIndex((s) => s && s.type === BT.STONE_SWORD && iInHotbar(s));
+  if (idx >= 0 && idx < HOTBAR_SIZE) pl.si = idx;
+  return { crafted: true };
+}
+
+/**
+ * Receta Mesa Avanzada: 4 Tablones ➔ 1 Cofre (BT.CHEST)
+ */
+export function craftChestLogic(pl: PlayerState): {
+  crafted: boolean;
+} {
+  if (!consumeItemFromInventory(pl, BT.PLANK, 4)) {
+    return { crafted: false };
+  }
+  addItemToInventory(pl, BT.CHEST, 1);
+  pl.score += 20;
+  const idx = pl.inventory.findIndex((s) => s && s.type === BT.CHEST && iInHotbar(s));
+  if (idx >= 0 && idx < HOTBAR_SIZE) pl.si = idx;
+  return { crafted: true };
+}
+
+/**
+ * Receta Mesa Avanzada: 1 Madera (o 1 Tablón) + 1 Palo ➔ 4 Antorchas (BT.TORCH) que emiten luz dinámica en la noche
+ */
+export function craftTorchesLogic(pl: PlayerState): {
+  crafted: boolean;
+  torchesTotal: number;
+} {
+  if (countItemInInventory(pl, BT.STICK) < 1) {
+    return { crafted: false, torchesTotal: countItemInInventory(pl, BT.TORCH) };
+  }
+  if (countItemInInventory(pl, BT.WOOD) >= 1) {
+    consumeItemFromInventory(pl, BT.WOOD, 1);
+  } else if (countItemInInventory(pl, BT.PLANK) >= 1) {
+    consumeItemFromInventory(pl, BT.PLANK, 1);
+  } else {
+    return { crafted: false, torchesTotal: countItemInInventory(pl, BT.TORCH) };
+  }
+  consumeItemFromInventory(pl, BT.STICK, 1);
+  addItemToInventory(pl, BT.TORCH, 4);
+  pl.score += 20;
+  const idx = pl.inventory.findIndex((s) => s && s.type === BT.TORCH && iInHotbar(s));
+  if (idx >= 0 && idx < HOTBAR_SIZE) pl.si = idx;
+  return { crafted: true, torchesTotal: countItemInInventory(pl, BT.TORCH) };
+}
+
+/**
+ * Calcula el daño de ataque del jugador según el arma o herramienta equipada (PvP y Mobs)
+ */
+export function getPlayerAttackDamage(pl: PlayerState, isPvP = false): number {
+  const held = pl.sel;
+  if (isPvP) {
+    if (held === BT.STONE_SWORD) return 6; // 3 corazones
+    if (held === BT.WOOD_SWORD) return 4; // 2 corazones
+    if (held === BT.STONE_PICKAXE || held === BT.WOOD_PICKAXE) return 3;
+    return 2; // 1 corazón base
+  }
+  if (held === BT.STONE_SWORD) return 14;
+  if (held === BT.WOOD_SWORD) return 10;
+  if (held === BT.STONE_PICKAXE) return 9;
+  if (held === BT.WOOD_PICKAXE) return 7;
+  return 5;
 }
 
 export function placeBoatInWaterLogic(
@@ -1004,6 +1151,39 @@ export function findValidMonsterSpawnPoint(
   return null;
 }
 
+function getEntitySupportGroundY(
+  world: InfiniteWorld,
+  px: number,
+  py: number,
+  pz: number
+): number {
+  let maxSurfaceY = 1;
+  const maxScanY = Math.min(WH - 2, Math.floor(py + 1.15));
+  for (const ox of [-0.26, 0.26]) {
+    for (const oz of [-0.26, 0.26]) {
+      const bx = Math.floor(px + ox);
+      const bz = Math.floor(pz + oz);
+      let sY = getH(bx, bz);
+      for (let y = maxScanY; y >= 1; y--) {
+        if (isSolid(world, bx, y, bz)) {
+          sY = y;
+          break;
+        }
+      }
+      if (sY > maxSurfaceY) {
+        maxSurfaceY = sY;
+      }
+    }
+  }
+  return maxSurfaceY + 1.0;
+}
+
+/**
+ * Requisito 1: Corrección de Físicas en el eje Y para entidades (Animales y Lobos)
+ * - Evita que el suelo bajo las patas sea detectado como muro lateral (offset Y +0.15)
+ * - Permite subir escalones naturales de 1 bloque de pasto/tierra (auto-step) usando soporte en las 4 esquinas
+ * - Garantiza que nunca se hundan por debajo de groundY (surfaceY + 1.0)
+ */
 export function stepEntityMovementWithCollision(
   world: InfiniteWorld,
   e: EntityData,
@@ -1011,41 +1191,50 @@ export function stepEntityMovementWithCollision(
 ): void {
   if (e.riddenByPlayer) return;
 
-  const nx = e.pos.x + e.vel.x * dt;
-  const nz = e.pos.z + e.vel.z * dt;
+  const clampedDt = Math.min(dt, 0.05);
 
-  if (!checkWallX(world, nx, e.pos.y, e.pos.z)) {
+  const curGroundY = getEntitySupportGroundY(world, e.pos.x, e.pos.y, e.pos.z);
+  if (e.pos.y < curGroundY) {
+    e.pos.y = curGroundY;
+    if (e.vel.y < 0) e.vel.y = 0;
+  }
+
+  const nx = e.pos.x + e.vel.x * clampedDt;
+  const nz = e.pos.z + e.vel.z * clampedDt;
+
+  // Movimiento en X con soporte para subir escalón de 1 bloque (auto-step)
+  if (!checkWallX(world, nx, e.pos.y + 0.15, e.pos.z)) {
     e.pos.x = nx;
+  } else if (!checkWallX(world, nx, e.pos.y + 1.15, e.pos.z)) {
+    e.pos.x = nx;
+    e.pos.y = Math.floor(e.pos.y) + 1.05;
+    if (e.vel.y < 0) e.vel.y = 0;
   } else {
-    e.vel.x = 0;
+    e.vel.x = -e.vel.x * 0.5;
   }
 
-  if (!checkWallZ(world, e.pos.x, e.pos.y, nz)) {
+  // Movimiento en Z con soporte para subir escalón de 1 bloque (auto-step)
+  if (!checkWallZ(world, e.pos.x, e.pos.y + 0.15, nz)) {
     e.pos.z = nz;
+  } else if (!checkWallZ(world, e.pos.x, e.pos.y + 1.15, nz)) {
+    e.pos.z = nz;
+    e.pos.y = Math.floor(e.pos.y) + 1.05;
+    if (e.vel.y < 0) e.vel.y = 0;
   } else {
-    e.vel.z = 0;
+    e.vel.z = -e.vel.z * 0.5;
   }
 
-  const bx = Math.floor(e.pos.x);
-  const bz = Math.floor(e.pos.z);
-  let surfaceY = getH(bx, bz);
-  for (let y = Math.min(WH - 2, Math.floor(e.pos.y + 2)); y >= 1; y--) {
-    if (isSolid(world, bx, y, bz)) {
-      surfaceY = y;
-      break;
-    }
-  }
-
-  const groundY = surfaceY + 1.0;
-  if (e.vel.y !== 0 || e.pos.y > groundY + 0.05) {
-    e.vel.y -= 18 * dt;
-    e.pos.y += e.vel.y * dt;
+  const groundY = getEntitySupportGroundY(world, e.pos.x, e.pos.y, e.pos.z);
+  if (e.vel.y !== 0 || e.pos.y > groundY + 0.04) {
+    e.vel.y -= 18 * clampedDt;
+    e.pos.y += e.vel.y * clampedDt;
     if (e.pos.y <= groundY) {
       e.pos.y = groundY;
       e.vel.y = 0;
     }
   } else {
     e.pos.y = groundY;
+    e.vel.y = 0;
   }
 }
 
@@ -1060,6 +1249,8 @@ export interface PlayerInputStep {
   yaw: number;
   joyX?: number;
   joyY?: number;
+  flying?: boolean;
+  descendHeld?: boolean;
 }
 
 export interface PhysicsStepResult {
@@ -1070,8 +1261,23 @@ export interface PhysicsStepResult {
 }
 
 /**
- * Requisito 4: Detecta si el jugador presionó una tecla o movió el joystick durante "Luz Roja"
+ * Requisito 2: Lógica de Muerte Estricta en "Luz Roja, Luz Verde"
+ * Detecta si el jugador presiona una tecla de movimiento (WASD, Space, Flechas),
+ * mueve el joystick o mueve la cámara del mouse (movementX, movementY en PointerLock)
+ * durante la "Luz Roja". En caso afirmativo, baja su HP a 0 al instante y devuelve "¡TE MOVISTE!".
  */
+export const RED_LIGHT_MOVEMENT_KEYS = new Set<string>([
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'Space',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+]);
+
 export function isPlayerMovingInput(input: PlayerInputStep): boolean {
   if (input.fwd || input.back || input.left || input.right || input.jumpHeld || input.jumpJustPressed) {
     return true;
@@ -1080,6 +1286,124 @@ export function isPlayerMovingInput(input: PlayerInputStep): boolean {
     return true;
   }
   return false;
+}
+
+export function checkRedLightViolationLogic(
+  challengeState: 'off' | 'green' | 'red',
+  pl: PlayerState,
+  event: {
+    keyCode?: string;
+    movementX?: number;
+    movementY?: number;
+    inputStep?: PlayerInputStep;
+  }
+): { violated: boolean; message: string } {
+  if (challengeState !== 'red') {
+    return { violated: false, message: '' };
+  }
+
+  let moved = false;
+  if (event.keyCode && RED_LIGHT_MOVEMENT_KEYS.has(event.keyCode)) {
+    moved = true;
+  }
+  if (
+    (typeof event.movementX === 'number' && Math.abs(event.movementX) > 0) ||
+    (typeof event.movementY === 'number' && Math.abs(event.movementY) > 0)
+  ) {
+    moved = true;
+  }
+  if (event.inputStep && isPlayerMovingInput(event.inputStep)) {
+    moved = true;
+  }
+
+  if (moved) {
+    pl.hp = 0;
+    return { violated: true, message: '¡TE MOVISTE!' };
+  }
+
+  return { violated: false, message: '' };
+}
+
+/**
+ * Brújula HUD minimalista que señala la dirección y distancia al aldeano perdido más cercano
+ */
+export interface VillagerCompassReading {
+  targetName: string;
+  distance: number;
+  relativeAngleDeg: number;
+  cardinal: string;
+  rescuedCount: number;
+  totalCount: number;
+  allRescued: boolean;
+}
+
+export function getNearestLostVillagerCompass(
+  playerPos: Vec3Like,
+  playerYaw: number,
+  villagers: EntityData[]
+): VillagerCompassReading {
+  const allVillagers = villagers.filter((v) => v.type === 'villager');
+  const totalCount = allVillagers.length || LOST_VILLAGER_SPAWNS.length;
+  const unrescued = allVillagers.filter((v) => !v.rescued);
+  const rescuedCount = totalCount - unrescued.length;
+
+  if (unrescued.length === 0) {
+    return {
+      targetName: '¡Todos rescatados!',
+      distance: 0,
+      relativeAngleDeg: 0,
+      cardinal: '✓',
+      rescuedCount: totalCount,
+      totalCount,
+      allRescued: true,
+    };
+  }
+
+  let nearest = unrescued[0];
+  let bestDist = Math.hypot(nearest.pos.x - playerPos.x, nearest.pos.z - playerPos.z);
+  for (let i = 1; i < unrescued.length; i++) {
+    const d = Math.hypot(unrescued[i].pos.x - playerPos.x, unrescued[i].pos.z - playerPos.z);
+    if (d < bestDist) {
+      bestDist = d;
+      nearest = unrescued[i];
+    }
+  }
+
+  const dx = nearest.pos.x - playerPos.x;
+  const dz = nearest.pos.z - playerPos.z;
+  // En nuestro sistema de cámara: forward = (-sin(yaw), -cos(yaw))
+  const worldAngle = Math.atan2(dx, -dz);
+  const relRad = worldAngle + playerYaw;
+  const relDeg = ((((relRad * 180) / Math.PI) % 360) + 360) % 360;
+
+  const worldCompassDeg = ((((Math.atan2(dx, -dz) * 180) / Math.PI) % 360) + 360) % 360;
+  const cardinals = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
+  const cardinal = cardinals[Math.round(worldCompassDeg / 45) % 8];
+
+  return {
+    targetName: nearest.vname || 'Aldeano Perdido',
+    distance: Math.round(bestDist),
+    relativeAngleDeg: Math.round(relDeg),
+    cardinal,
+    rescuedCount,
+    totalCount,
+    allRescued: false,
+  };
+}
+
+export function rescueVillagerLogic(
+  villager: EntityData,
+  pl: PlayerState
+): { rescued: boolean; name: string } {
+  if (villager.type !== 'villager' || villager.rescued) {
+    return { rescued: false, name: villager.vname || '' };
+  }
+  if (Math.hypot(villager.pos.x - pl.pos.x, villager.pos.z - pl.pos.z) > 5.0) {
+    return { rescued: false, name: villager.vname || '' };
+  }
+  villager.rescued = true;
+  pl.score += 100;
+  return { rescued: true, name: villager.vname || 'Aldeano' };
 }
 
 export function stepPlayerPhysics(
@@ -1128,6 +1452,19 @@ export function stepPlayerPhysics(
     const invLen = 1 / Math.sqrt(lenSq);
     mvX *= invLen;
     mvZ *= invLen;
+  }
+
+  // Modo Vuelo Libre (al llegar a 00:00 en Batalla de Construcción para ver y votar)
+  if (input.flying) {
+    const flySpd = 9.5;
+    pl.vel.x = mvX * flySpd;
+    pl.vel.z = mvZ * flySpd;
+    pl.vel.y = input.jumpHeld ? 7.2 : input.descendHeld ? -7.2 : 0;
+    pl.pos.x += pl.vel.x * clampedDt;
+    pl.pos.z += pl.vel.z * clampedDt;
+    pl.pos.y = Math.max(2, Math.min(WH - 1.5, pl.pos.y + pl.vel.y * clampedDt));
+    pl.onGround = false;
+    return { jumped: false, landed: false, inWater: false, footstepTriggered: false };
   }
 
   // Modo Navegación en Bote
@@ -1334,7 +1671,8 @@ export function placeBlockLogic(
   z: number,
   nxNorm: number,
   nyNorm: number,
-  nzNorm: number
+  nzNorm: number,
+  infiniteCreative = false
 ): {
   placed: boolean;
   tx: number;
@@ -1391,9 +1729,13 @@ export function placeBlockLogic(
     }
     sB(world, tx, ty, tz, BT.DOOR);
     sB(world, tx, ty + 1, tz, BT.DOOR);
-    activeSlot.count -= 1;
-    if (activeSlot.count <= 0) {
-      pl.inventory[pl.si] = null;
+    if (!infiniteCreative) {
+      activeSlot.count -= 1;
+      if (activeSlot.count <= 0) {
+        pl.inventory[pl.si] = null;
+      }
+    } else {
+      activeSlot.count = 999;
     }
     pl.blocksPlaced += 2;
     pl.score += 10;
@@ -1401,9 +1743,13 @@ export function placeBlockLogic(
   }
 
   sB(world, tx, ty, tz, blockType);
-  activeSlot.count -= 1;
-  if (activeSlot.count <= 0) {
-    pl.inventory[pl.si] = null;
+  if (!infiniteCreative) {
+    activeSlot.count -= 1;
+    if (activeSlot.count <= 0) {
+      pl.inventory[pl.si] = null;
+    }
+  } else {
+    activeSlot.count = 999;
   }
   pl.blocksPlaced++;
   pl.score += 5;
@@ -1509,6 +1855,134 @@ export function tameWolfLogic(
   wolf.wname = assignedName;
   pl.score += 40;
   return { tamed: true, name: assignedName };
+}
+
+/**
+ * Requisito 1: IA reparada del Lobo Domado (wolf_t)
+ * - Sigue activamente la posición exacta de su dueño (Jugador 1)
+ * - Si el jugador se aleja a más de 15 bloques, el lobo se teletransporta inmediatamente detrás de él
+ * - Si hay monstruos nocturnos cerca del dueño, los ataca y luego vuelve junto al jugador
+ */
+export function stepTamedWolfAILogic(
+  world: InfiniteWorld,
+  wolf: EntityData,
+  pl: PlayerState,
+  entities: EntityData[],
+  dt: number,
+  playerYaw = 0
+): {
+  teleported: boolean;
+  following: boolean;
+  attackedEnemy: EntityData | null;
+  enemyDefeated: boolean;
+} {
+  if (!wolf.alive || (wolf.type !== 'wolf_t' && !wolf.tamed)) {
+    return { teleported: false, following: false, attackedEnemy: null, enemyDefeated: false };
+  }
+
+  wolf.timer = Math.max(0, wolf.timer - dt);
+  const distToOwner = distance3D(wolf.pos, pl.pos);
+
+  // Si el jugador se aleja a más de 15 bloques, teletransportar al lobo detrás de él
+  if (distToOwner > 15) {
+    const behindX = pl.pos.x + Math.sin(playerYaw) * 1.8;
+    const behindZ = pl.pos.z + Math.cos(playerYaw) * 1.8;
+    const sy = surfY(world, behindX, behindZ);
+    wolf.pos.x = behindX;
+    wolf.pos.y = Math.max(sy, pl.pos.y) + 0.15;
+    wolf.pos.z = behindZ;
+    wolf.vel.x = 0;
+    wolf.vel.y = 0;
+    wolf.vel.z = 0;
+    wolf.state = 'chase';
+    return { teleported: true, following: true, attackedEnemy: null, enemyDefeated: false };
+  }
+
+  // Buscar enemigo hostil cercano al jugador/lobo
+  let nearEnemy: EntityData | null = null;
+  let nearestDist = 12;
+  for (let i = 0; i < entities.length; i++) {
+    const cand = entities[i];
+    if (
+      cand.alive &&
+      (cand.type === 'zombie' || cand.type === 'spider' || cand.type === 'enderman')
+    ) {
+      const d = distance3D(wolf.pos, cand.pos);
+      if (d < nearestDist && distance3D(pl.pos, cand.pos) < 14) {
+        nearestDist = d;
+        nearEnemy = cand;
+      }
+    }
+  }
+
+  if (nearEnemy) {
+    const dx = nearEnemy.pos.x - wolf.pos.x;
+    const dz = nearEnemy.pos.z - wolf.pos.z;
+    const len = Math.hypot(dx, dz) || 1;
+    wolf.vel.x = (dx / len) * 5.4;
+    wolf.vel.z = (dz / len) * 5.4;
+    wolf.state = 'chase';
+
+    let attackedEnemy: EntityData | null = null;
+    let enemyDefeated = false;
+    if (nearestDist < 1.9 && wolf.timer <= 0) {
+      const res = damageEntityLogic(nearEnemy, pl, 6);
+      attackedEnemy = nearEnemy;
+      enemyDefeated = res.defeated;
+      wolf.timer = 0.65;
+    }
+    stepEntityMovementWithCollision(world, wolf, dt);
+    return { teleported: false, following: true, attackedEnemy, enemyDefeated };
+  }
+
+  // Seguir activamente la posición exacta del dueño (Jugador 1)
+  const horizDist = Math.hypot(pl.pos.x - wolf.pos.x, pl.pos.z - wolf.pos.z);
+  if (horizDist > 2.1) {
+    const dx = pl.pos.x - wolf.pos.x;
+    const dz = pl.pos.z - wolf.pos.z;
+    const len = Math.hypot(dx, dz) || 1;
+    const followSpeed = horizDist > 6 ? 6.2 : 4.9;
+    wolf.vel.x = (dx / len) * followSpeed;
+    wolf.vel.z = (dz / len) * followSpeed;
+    wolf.state = 'chase';
+    stepEntityMovementWithCollision(world, wolf, dt);
+    return { teleported: false, following: true, attackedEnemy: null, enemyDefeated: false };
+  } else {
+    wolf.vel.x = 0;
+    wolf.vel.z = 0;
+    wolf.state = 'idle';
+    stepEntityMovementWithCollision(world, wolf, dt);
+    return { teleported: false, following: false, attackedEnemy: null, enemyDefeated: false };
+  }
+}
+
+export type WeatherType = 'clear' | 'rain' | 'snow';
+
+/**
+ * Requisito 4: Sistema de Clima Dinámico — durante la lluvia se generan pequeños charcos de agua (BT.PUDDLE) en el suelo
+ */
+export function spawnRainPuddleLogic(
+  world: InfiniteWorld,
+  playerPos: Vec3Like,
+  rng: () => number = Math.random
+): { spawned: boolean; x: number; y: number; z: number } {
+  const ang = rng() * Math.PI * 2;
+  const dist = 3 + rng() * 12;
+  const wx = Math.floor(playerPos.x + Math.cos(ang) * dist);
+  const wz = Math.floor(playerPos.z + Math.sin(ang) * dist);
+  ensureChunksAroundPlayer(world, wx, wz, 0);
+
+  const sy = surfY(world, wx, wz);
+  if (sy <= SEA + 1 || sy >= WH - 2) {
+    return { spawned: false, x: wx, y: sy, z: wz };
+  }
+  const groundBlock = gB(world, wx, sy - 1, wz);
+  const aboveBlock = gB(world, wx, sy, wz);
+  if ((groundBlock === BT.GRASS || groundBlock === BT.DIRT || groundBlock === BT.STONE) && aboveBlock === BT.AIR) {
+    sB(world, wx, sy, wz, BT.PUDDLE);
+    return { spawned: true, x: wx, y: sy, z: wz };
+  }
+  return { spawned: false, x: wx, y: sy, z: wz };
 }
 
 export function stepEnemyCombatLogic(
@@ -1617,8 +2091,7 @@ export function surfY(world: InfiniteWorld, x: number, z: number): number {
   const ix = Math.floor(x);
   const iz = Math.floor(z);
   for (let y = WH - 2; y >= 1; y--) {
-    const b = gB(world, ix, y, iz);
-    if (b !== BT.AIR && b !== BT.WATER && b !== BT.LEAVES) {
+    if (isSolid(world, ix, y, iz)) {
       return y + 1;
     }
   }
@@ -1765,3 +2238,253 @@ export function deserializeSaveGame(
     return { restored: false, yaw: 0.75, pitch: -0.1 };
   }
 }
+
+/**
+ * ─── MODO "BATALLA DE CONSTRUCCIÓN" (BUILD BATTLE) Y ARENA "LUZ ROJA" ───
+ */
+export type GameModeType = 'survival' | 'red_light' | 'build_battle';
+export type BuildBattleOpponent = 'friends' | 'ai';
+
+export const BUILD_BATTLE_DURATION_SEC = 360; // 6 Minutos (06:00)
+export const BUILD_BATTLE_FLOOR_Y = 10;
+
+export function formatBuildBattleTimer(totalSeconds: number): string {
+  const clamped = Math.max(0, Math.floor(totalSeconds));
+  const mins = Math.floor(clamped / 60);
+  const secs = clamped % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+/**
+ * Equipa el Inventario Creativo Infinito para Batalla de Construcción:
+ * Incluye bloques de Oro, Diamante, Sillas, Mesas, Ladrillos, Tablones, Vidrio, Piedra y Antorchas.
+ */
+export function equipBuildBattleCreativeInventory(pl: PlayerState): void {
+  const creativeItems = [
+    BT.GOLD,
+    BT.DIAMOND,
+    BT.BRICK,
+    BT.CHAIR,
+    BT.TABLE,
+    BT.PLANK,
+    BT.GLASS,
+    BT.STONE,
+    BT.TORCH,
+    BT.WOOD,
+    BT.COBBLE,
+    BT.DOOR,
+    BT.BED,
+    BT.CHEST,
+    BT.LEAVES,
+    BT.WOOL,
+    BT.SAND,
+    BT.SNOW,
+  ];
+  for (let i = 0; i < TOTAL_INV_SLOTS; i++) {
+    if (i < creativeItems.length) {
+      pl.inventory[i] = { type: creativeItems[i], count: 999 };
+    } else {
+      pl.inventory[i] = null;
+    }
+  }
+  pl.si = 0;
+}
+
+/**
+ * Construye el mapa plano de Batalla de Construcción dividido por un muro central (x = 0).
+ * Mitad izquierda (x < 0): Jugador 1.
+ * Mitad derecha (x > 0): Amigos o Bot IA Constructor.
+ */
+export function setupBuildBattleArena(world: InfiniteWorld): {
+  floorY: number;
+  playerSpawn: Vec3Like;
+  opponentSpawn: Vec3Like;
+  wallCoords: Array<{ x: number; y: number; z: number }>;
+} {
+  ensureChunksAroundPlayer(world, 0, 0, 2);
+  const floorY = BUILD_BATTLE_FLOOR_Y;
+  const wallCoords: Array<{ x: number; y: number; z: number }> = [];
+
+  for (let x = -16; x <= 16; x++) {
+    for (let z = -12; z <= 12; z++) {
+      // Base plana sólida
+      sB(world, x, floorY - 1, z, BT.DIRT);
+      const isBorder = Math.abs(x) === 16 || Math.abs(z) === 12;
+      sB(world, x, floorY, z, isBorder ? BT.STONE : BT.GRASS);
+
+      // Limpiar cielo encima de la plataforma
+      for (let y = floorY + 1; y < WH - 1; y++) {
+        sB(world, x, y, z, BT.AIR);
+      }
+
+      // Borde perimetral bajo
+      if (isBorder) {
+        sB(world, x, floorY + 1, z, BT.COBBLE);
+      }
+
+      // Muro central divisorio en x = 0
+      if (x === 0 && z >= -11 && z <= 11) {
+        for (let y = floorY + 1; y <= floorY + 6; y++) {
+          const wallBlock = y === floorY + 6 ? BT.GOLD : BT.COBBLE;
+          sB(world, x, y, z, wallBlock);
+          wallCoords.push({ x, y, z });
+        }
+      }
+    }
+  }
+
+  return {
+    floorY,
+    playerSpawn: { x: -7.5, y: floorY + 1.05, z: 0.5 },
+    opponentSpawn: { x: 7.5, y: floorY + 1.05, z: 0.5 },
+    wallCoords,
+  };
+}
+
+/**
+ * Abre el muro divisorio central cuando el temporizador llega a 00:00 para que todos puedan volar, ver y votar.
+ */
+export function openBuildBattleDividingWall(world: InfiniteWorld): void {
+  const floorY = BUILD_BATTLE_FLOOR_Y;
+  for (let z = -11; z <= 11; z++) {
+    for (let y = floorY + 1; y <= floorY + 6; y++) {
+      sB(world, 0, y, z, BT.AIR);
+    }
+  }
+}
+
+/**
+ * Genera el plano (blueprint) de la casa que el Bot IA construye paso a paso en la otra mitad (x > 0).
+ */
+export function getAiHouseBlueprint(
+  floorY = BUILD_BATTLE_FLOOR_Y
+): Array<{ x: number; y: number; z: number; blockType: number }> {
+  const steps: Array<{ x: number; y: number; z: number; blockType: number }> = [];
+  const minX = 5;
+  const maxX = 11;
+  const minZ = -3;
+  const maxZ = 3;
+  const baseY = floorY + 1;
+
+  // 1. Piso de tablones y esquinas de Oro
+  for (let x = minX; x <= maxX; x++) {
+    for (let z = minZ; z <= maxZ; z++) {
+      const isCorner = (x === minX || x === maxX) && (z === minZ || z === maxZ);
+      steps.push({ x, y: floorY, z, blockType: isCorner ? BT.GOLD : BT.PLANK });
+    }
+  }
+
+  // 2. Paredes de Ladrillo, pilares de Oro y ventanas de Vidrio (3 niveles)
+  for (let dy = 0; dy < 3; dy++) {
+    const y = baseY + dy;
+    for (let x = minX; x <= maxX; x++) {
+      for (let z = minZ; z <= maxZ; z++) {
+        const onEdge = x === minX || x === maxX || z === minZ || z === maxZ;
+        if (!onEdge) continue;
+        // Entrada frontal en x === minX, z === 0 (niveles 0 y 1)
+        if (x === minX && z === 0 && dy < 2) continue;
+        const isCorner = (x === minX || x === maxX) && (z === minZ || z === maxZ);
+        const isWindow = dy === 1 && ((x === maxX && z === 0) || (z === minZ && x === 8) || (z === maxZ && x === 8));
+        steps.push({
+          x,
+          y,
+          z,
+          blockType: isCorner ? BT.GOLD : isWindow ? BT.GLASS : BT.BRICK,
+        });
+      }
+    }
+  }
+
+  // 3. Mobiliario interior: Mesa, Sillas, Antorchas y Diamante central
+  steps.push({ x: 8, y: baseY, z: 0, blockType: BT.TABLE });
+  steps.push({ x: 8, y: baseY, z: -1, blockType: BT.CHAIR });
+  steps.push({ x: 8, y: baseY, z: 1, blockType: BT.CHAIR });
+  steps.push({ x: 10, y: baseY, z: 2, blockType: BT.TORCH });
+  steps.push({ x: 10, y: baseY, z: -2, blockType: BT.TORCH });
+
+  // 4. Techo piramidal de Tablones y remate de Diamante
+  for (let x = minX; x <= maxX; x++) {
+    for (let z = minZ; z <= maxZ; z++) {
+      steps.push({ x, y: baseY + 3, z, blockType: BT.PLANK });
+    }
+  }
+  for (let x = minX + 1; x <= maxX - 1; x++) {
+    for (let z = minZ + 1; z <= maxZ - 1; z++) {
+      steps.push({ x, y: baseY + 4, z, blockType: BT.GOLD });
+    }
+  }
+  steps.push({ x: 8, y: baseY + 5, z: 0, blockType: BT.DIAMOND });
+
+  return steps;
+}
+
+/**
+ * Avanza un paso de construcción del Bot IA en su mitad del mapa.
+ */
+export function stepAiBuilderBot(
+  world: InfiniteWorld,
+  botEntity: EntityData | null,
+  blueprint: Array<{ x: number; y: number; z: number; blockType: number }>,
+  progressIdx: number
+): {
+  nextIdx: number;
+  placedBlock?: { x: number; y: number; z: number; blockType: number };
+} {
+  if (progressIdx >= blueprint.length) {
+    return { nextIdx: progressIdx };
+  }
+  const step = blueprint[progressIdx];
+  sB(world, step.x, step.y, step.z, step.blockType);
+  if (botEntity) {
+    botEntity.pos.x = step.x - 1.2;
+    botEntity.pos.y = BUILD_BATTLE_FLOOR_Y + 1.1;
+    botEntity.pos.z = step.z;
+  }
+  return {
+    nextIdx: progressIdx + 1,
+    placedBlock: step,
+  };
+}
+
+/**
+ * Construye una Arena Cerrada para el Minijuego "Luz Roja, Luz Verde"
+ */
+export function setupRedLightArena(world: InfiniteWorld): {
+  startX: number;
+  startY: number;
+  startZ: number;
+  finishZ: number;
+} {
+  ensureChunksAroundPlayer(world, 0, 0, 2);
+  const floorY = 10;
+  for (let x = -8; x <= 8; x++) {
+    for (let z = -22; z <= 8; z++) {
+      sB(world, x, floorY - 1, z, BT.STONE);
+      const isFinishLine = z === -18;
+      const isStartLine = z === 4;
+      sB(
+        world,
+        x,
+        floorY,
+        z,
+        isFinishLine ? BT.GOLD : isStartLine ? BT.PLANK : BT.SAND
+      );
+      for (let y = floorY + 1; y < WH - 1; y++) {
+        sB(world, x, y, z, BT.AIR);
+      }
+      // Muros cerrados del corredor
+      if (x === -8 || x === 8 || z === -22 || z === 8) {
+        for (let y = floorY + 1; y <= floorY + 4; y++) {
+          sB(world, x, y, z, y === floorY + 4 ? BT.GOLD : BT.BRICK);
+        }
+      }
+    }
+  }
+  return {
+    startX: 0.5,
+    startY: floorY + 1.05,
+    startZ: 5.5,
+    finishZ: -18,
+  };
+}
+
