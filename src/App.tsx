@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { Peer, DataConnection } from 'peerjs';
 import {
   BT,
@@ -240,6 +243,7 @@ export function App() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatInputText, setChatInputText] = useState('');
   const [selectedSwapSlot, setSelectedSwapSlot] = useState<number | null>(null);
+  const [isTabHeld, setIsTabHeld] = useState(false);
 
   // Estado PWA ("Instalar Juego")
   const [pwaInstallBannerMsg, setPwaInstallBannerMsg] = useState<string | null>(null);
@@ -575,21 +579,117 @@ export function App() {
       }
     };
 
-    // ─── RENDERER & SCENE PBR ─────────────────────────────────────────
-    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.08;
-    renderer.domElement.className = 'block w-full h-full cursor-crosshair select-none';
+    // ─── RENDERER & SCENE PBR (CON FALLBACK 2D 3D-PROJECTED SI WEBGL ESTÁ DESHABILITADO) ───
+    const mainCanvas = document.createElement('canvas');
+    mainCanvas.id = 'c';
+    mainCanvas.width = window.innerWidth;
+    mainCanvas.height = window.innerHeight;
+    mainCanvas.className = 'block w-full h-full cursor-crosshair select-none';
     container.innerHTML = '';
-    container.appendChild(renderer.domElement);
+    container.appendChild(mainCanvas);
+
+    let glContext: WebGLRenderingContext | WebGL2RenderingContext | null = null;
+    try {
+      glContext =
+        (mainCanvas.getContext('webgl2', { antialias: true }) as WebGL2RenderingContext | null) ||
+        (mainCanvas.getContext('webgl', { antialias: true }) as WebGLRenderingContext | null) ||
+        (mainCanvas.getContext('webgl2', {
+          antialias: false,
+          failIfMajorPerformanceCaveat: false,
+        }) as WebGL2RenderingContext | null) ||
+        (mainCanvas.getContext('webgl', {
+          antialias: false,
+          failIfMajorPerformanceCaveat: false,
+        }) as WebGLRenderingContext | null) ||
+        (mainCanvas.getContext('experimental-webgl') as WebGLRenderingContext | null);
+    } catch {
+      glContext = null;
+    }
+
+    let webglRenderer: THREE.WebGLRenderer | null = null;
+    let fallbackCanvas: HTMLCanvasElement = mainCanvas;
+    let fallbackCtx2D: CanvasRenderingContext2D | null = null;
+
+    if (glContext) {
+      try {
+        webglRenderer = new THREE.WebGLRenderer({
+          canvas: mainCanvas,
+          context: glContext as WebGLRenderingContext,
+          antialias: true,
+        });
+        webglRenderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+        webglRenderer.setSize(window.innerWidth, window.innerHeight);
+        webglRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+        webglRenderer.toneMappingExposure = 1.08;
+      } catch {
+        webglRenderer = null;
+      }
+    }
+
+    if (!webglRenderer) {
+      // Si el navegador tiene WebGL deshabilitado (GL_VENDOR = Disabled), usar un nuevo canvas 2D limpio
+      const swCanvas = document.createElement('canvas');
+      swCanvas.id = 'c';
+      swCanvas.width = window.innerWidth;
+      swCanvas.height = window.innerHeight;
+      swCanvas.className = 'block w-full h-full cursor-crosshair select-none';
+      container.innerHTML = '';
+      container.appendChild(swCanvas);
+      fallbackCanvas = swCanvas;
+      fallbackCtx2D = swCanvas.getContext('2d');
+    }
+
+    const renderer = {
+      domElement: webglRenderer ? webglRenderer.domElement : fallbackCanvas,
+      setSize: (w: number, h: number) => {
+        if (webglRenderer) {
+          webglRenderer.setSize(w, h);
+        } else {
+          fallbackCanvas.width = w;
+          fallbackCanvas.height = h;
+        }
+      },
+      setViewport: (x: number, y: number, w: number, h: number) => {
+        if (webglRenderer) {
+          webglRenderer.setViewport(x, y, w, h);
+        }
+      },
+      render: (sc: THREE.Scene, cm: THREE.Camera) => {
+        if (webglRenderer) {
+          webglRenderer.render(sc, cm);
+        }
+      },
+      dispose: () => {
+        if (webglRenderer) {
+          webglRenderer.dispose();
+        }
+      },
+    };
 
     const scene = new THREE.Scene();
     const sceneFog = new THREE.FogExp2(0x87ceeb, 0.011);
     scene.fog = sceneFog;
 
     const cam1 = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 145);
+
+    // Requisito 3: Filtro de 'bloom' suave usando THREE.EffectComposer y UnrealBloomPass (cuando WebGL está activo)
+    let composer: EffectComposer | null = null;
+    if (webglRenderer) {
+      try {
+        composer = new EffectComposer(webglRenderer);
+        const renderPass = new RenderPass(scene, cam1);
+        composer.addPass(renderPass);
+        const bloomPass = new UnrealBloomPass(
+          new THREE.Vector2(window.innerWidth, window.innerHeight),
+          0.38,
+          0.55,
+          0.78
+        );
+        composer.addPass(bloomPass);
+      } catch {
+        composer = null;
+      }
+    }
 
     const ambL = new THREE.AmbientLight(0xffffff, 0.58);
     scene.add(ambL);
@@ -606,7 +706,7 @@ export function App() {
 
     const sunMesh = new THREE.Mesh(
       new THREE.SphereGeometry(4.5, 10, 10),
-      new THREE.MeshBasicMaterial({ color: 0xffee44 })
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(1.45, 1.3, 0.45) })
     );
     scene.add(sunMesh);
 
@@ -893,7 +993,7 @@ export function App() {
       }
       if (d.em) {
         matParams.emissive = new THREE.Color(d.em);
-        matParams.emissiveIntensity = id === BT.TORCH ? 1.8 : 0.9;
+        matParams.emissiveIntensity = id === BT.TORCH ? 2.4 : 1.1;
       }
       BMAT[id] = new THREE.MeshStandardMaterial(matParams);
     }
@@ -1990,6 +2090,13 @@ export function App() {
     let localWalkPhase = 0;
 
     const onKeyDown = (e: KeyboardEvent) => {
+      // Requisito 1: Paneles ocultables mientras se mantiene presionada la tecla TAB
+      if (e.code === 'Tab') {
+        e.preventDefault();
+        setIsTabHeld(true);
+        return;
+      }
+
       if (wolfModalOpenLocal || chatOpenLocal) {
         if (e.code === 'Escape' && chatOpenLocal) {
           chatOpenLocal = false;
@@ -2094,14 +2201,27 @@ export function App() {
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Tab') {
+        e.preventDefault();
+        setIsTabHeld(false);
+        return;
+      }
       if (e.code === 'Space') {
         jumpJustReleased = true;
       }
       keys[e.code] = false;
     };
 
+    const onWindowBlur = () => {
+      setIsTabHeld(false);
+      for (const k of Object.keys(keys)) {
+        keys[k] = false;
+      }
+    };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onWindowBlur);
 
     const onPointerLockChange = () => {
       pointerLocked = document.pointerLockElement === renderer.domElement;
@@ -2152,8 +2272,11 @@ export function App() {
     };
     window.addEventListener('wheel', onWheel, { passive: true });
 
-    // ─── INTERACCIÓN: ROMPER / PVP (CLIC IZQ) Y CONSTRUIR / RESCATAR / MESA FÍSICA (CLIC DER) ──
-    function performBreakOrAttack() {
+    // Registro de bloques colocados por el jugador para proteger la arena en Batalla de Construcción
+    const playerPlacedBlocks = new Set<string>();
+
+    // ─── INTERACCIÓN: doBreak (CLIC IZQ) Y doPlace (CLIC DER) CON MAPAS INDESTRUCTIBLES ──
+    function doBreak() {
       ensureAudio();
       const yaw = camAnglesRef.current.yaw;
       const pitch = camAnglesRef.current.pitch;
@@ -2225,9 +2348,23 @@ export function App() {
       }
 
       if (!attackedEntity) {
+        // Requisito 2: En "Luz Roja" desactivar totalmente la capacidad de romper bloques
+        if (gameModeRef.current === 'red_light') {
+          showMsg('🚫 En Luz Roja está desactivado romper bloques.');
+          return;
+        }
+
         const hit = raycastBlock(world, PL1.pos, PL1.eyeH, yaw, pitch);
         if (hit) {
-          const res = breakBlockLogic(world, PL1, hit.bx, hit.by, hit.bz);
+          const res = breakBlockLogic(
+            world,
+            PL1,
+            hit.bx,
+            hit.by,
+            hit.bz,
+            gameModeRef.current,
+            gameModeRef.current === 'build_battle' ? playerPlacedBlocks : undefined
+          );
           if (res.broken) {
             playSfx('break');
             const col = BD[res.oldType]?.c ?? 0xffffff;
@@ -2254,19 +2391,27 @@ export function App() {
             }
 
             const itemDef = BD[res.oldType === BT.DOOR_OPEN ? BT.DOOR : res.oldType];
-            if (itemDef) {
+            if (itemDef && gameModeRef.current !== 'build_battle') {
               const yieldTxt = res.bonusYield && res.bonusYield > 1 ? `x${res.bonusYield} (¡Pico!)` : '+1';
               showMsg(`⛏️ Recolectaste ${yieldTxt} ${itemDef.ic} ${itemDef.n}`);
             }
+          } else if (res.blockedReason) {
+            showMsg(res.blockedReason);
           }
         }
       }
     }
 
-    function performPlaceOrInteract() {
+    function doPlace() {
       ensureAudio();
       const yaw = camAnglesRef.current.yaw;
       const pitch = camAnglesRef.current.pitch;
+
+      // Requisito 2: En "Luz Roja" desactivar totalmente la capacidad de colocar bloques
+      if (gameModeRef.current === 'red_light') {
+        showMsg('🚫 En Luz Roja está desactivado colocar bloques.');
+        return;
+      }
 
       // 0. Rescatar Aldeano Perdido si está cerca
       for (const e of entities) {
@@ -2389,7 +2534,9 @@ export function App() {
         hit.nx,
         hit.ny,
         hit.nz,
-        isCreativeBuildBattle
+        isCreativeBuildBattle,
+        gameModeRef.current,
+        playerPlacedBlocks
       );
       if (res.placed) {
         playSfx('place');
@@ -2415,8 +2562,10 @@ export function App() {
         } else if (res.blockType === BT.TABLE && !isCreativeBuildBattle) {
           showMsg('🪑 ¡Mesa de Crafteo colocada en el piso! Haz Clic Derecho sobre ella para abrir el catálogo.');
         } else if (res.blockType === BT.TORCH) {
-          showMsg('🕯️ ¡Antorcha colocada! Emitirá luz cálida dinámica en la oscuridad.');
+          showMsg('🕯️ ¡Antorcha colocada! Emite luz PointLight y repele a las arañas en un radio de 5 bloques.');
         }
+      } else if (res.blockedReason) {
+        showMsg(res.blockedReason);
       } else if (PL1.sel === 0) {
         showMsg('🎒 Mano vacía: rompe árboles (🪵) o presiona [X] para el Crafteo Rápido.');
       }
@@ -2426,9 +2575,9 @@ export function App() {
       ensureAudio();
       if (!pointerLocked) return;
       if (e.button === 0) {
-        performBreakOrAttack();
+        doBreak();
       } else if (e.button === 2) {
-        performPlaceOrInteract();
+        doPlace();
       }
     };
 
@@ -2472,11 +2621,11 @@ export function App() {
           : 'hs relative w-12 h-12 rounded-xl flex flex-col items-center justify-center cursor-pointer transition-all duration-150 bg-slate-950/65 border border-white/15 hover:border-cyan-400/50';
         s.innerHTML = `<span class="sn absolute top-0.5 left-1.5 text-[9px] font-mono text-emerald-300/80">${
           idx + 1
-        }</span><span class="text-lg leading-none">${
+        }</span><span class="slot-icon text-lg leading-none">${
           d ? d.ic : '<span class="text-slate-600 text-xs">·</span>'
         }</span>${
           slot && slot.count > 0
-            ? `<span class="absolute bottom-0.5 right-1 text-[10px] font-mono font-bold text-amber-300 drop-shadow">${slot.count}</span>`
+            ? `<span class="slot-count absolute bottom-0.5 right-1 text-[10px] font-mono font-bold text-amber-300 drop-shadow">${slot.count}</span>`
             : ''
         }`;
         s.onclick = (ev) => {
@@ -2551,6 +2700,7 @@ export function App() {
       buildBattleOpponentRef.current = opponent;
       setBuildBattleOpponent(opponent);
       setMovedDeathBanner(null);
+      playerPlacedBlocks.clear();
 
       if (mode === 'survival') {
         challengeStateRef.current = 'off';
@@ -2838,9 +2988,9 @@ export function App() {
           playSfx('craft');
           buildHotbar();
           setUiTick((t) => t + 1);
-          showMsg(`🕯️ ¡Crafteaste +4 Antorchas! Emiten luz dinámica en la noche.`);
+          showMsg(`🕯️ ¡Crafteaste +4 Antorchas (1 Palo + 1 Tablón)! Emiten luz PointLight y repelen arañas.`);
         } else {
-          showMsg('❌ Necesitas 1 🪵 Madera (o Tablón) + 1 🥢 Palo para 4 Antorchas.');
+          showMsg('❌ Necesitas 1 🥢 Palo + 1 📦 Tablón para craftear Antorchas.');
         }
       },
       changeClothes: () => {
@@ -2992,10 +3142,10 @@ export function App() {
         connectToExistingRoom(code);
       },
       touchActionBreak: () => {
-        performBreakOrAttack();
+        doBreak();
       },
       touchActionPlace: () => {
-        performPlaceOrInteract();
+        doPlace();
       },
       touchJumpStart: () => {
         if (!keys['Space']) jumpJustPressed = true;
@@ -3264,11 +3414,13 @@ export function App() {
 
           if (e.eyes) {
             const windupColor =
-              e.state === 'windup'
-                ? 0xffff00
-                : e.type === 'enderman'
-                  ? 0xd946ef
-                  : 0xff1111;
+              e.state === 'panic'
+                ? 0x38bdf8
+                : e.state === 'windup'
+                  ? 0xffff00
+                  : e.type === 'enderman'
+                    ? 0xd946ef
+                    : 0xff1111;
             e.eyes.forEach((eye) => {
               (eye.material as THREE.MeshBasicMaterial).color.setHex(windupColor);
             });
@@ -3694,13 +3846,106 @@ export function App() {
       }
 
       renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
-      renderer.render(scene, cam1);
+      if (composer) {
+        composer.render();
+      } else if (webglRenderer) {
+        webglRenderer.render(scene, cam1);
+      } else if (fallbackCtx2D) {
+        // Renderizador 3D proyectado en Canvas 2D con efecto Bloom suave cuando WebGL está deshabilitado en el entorno
+        const w = fallbackCanvas.width;
+        const h = fallbackCanvas.height;
+        const ctx = fallbackCtx2D;
+        cam1.updateProjectionMatrix();
+        const skyHex = `#${skyMat.color.getHexString()}`;
+        const grad = ctx.createLinearGradient(0, 0, 0, h);
+        grad.addColorStop(0, skyHex);
+        grad.addColorStop(1, '#0f172a');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+
+        // Sol / Luna con halo de Bloom envolvente
+        const sunProj = sunMesh.position.clone().project(cam1);
+        if (sunProj.z < 1) {
+          const sx = (sunProj.x * 0.5 + 0.5) * w;
+          const sy = (-sunProj.y * 0.5 + 0.5) * h;
+          const sunGlow = ctx.createRadialGradient(sx, sy, 6, sx, sy, 68);
+          sunGlow.addColorStop(0, 'rgba(255, 240, 130, 0.95)');
+          sunGlow.addColorStop(0.4, 'rgba(251, 191, 36, 0.35)');
+          sunGlow.addColorStop(1, 'rgba(251, 191, 36, 0)');
+          ctx.fillStyle = sunGlow;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 68, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Proyección 3D de bloques cercanos alrededor de la cámara
+        const drawList: Array<{
+          distSq: number;
+          sx: number;
+          sy: number;
+          size: number;
+          col: number;
+          isTorch: boolean;
+        }> = [];
+        const cx = Math.floor(PL1.pos.x);
+        const cz = Math.floor(PL1.pos.z);
+        const pVec = new THREE.Vector3();
+        for (let dx = -12; dx <= 12; dx++) {
+          for (let dz = -12; dz <= 12; dz++) {
+            const wx = cx + dx;
+            const wz = cz + dz;
+            const topY = Math.max(1, surfY(world, wx, wz) - 1);
+            for (let wy = Math.max(1, topY - 2); wy <= Math.min(WH - 2, topY + 4); wy++) {
+              const b = gB(world, wx, wy, wz);
+              if (b === BT.AIR || !vis(wx, wy, wz)) continue;
+              pVec.set(wx + 0.5, wy + 0.5, wz + 0.5);
+              const distSq = pVec.distanceToSquared(cam1.position);
+              if (distSq > 260 || distSq < 0.2) continue;
+              pVec.project(cam1);
+              if (pVec.z >= 1 || pVec.z < -1) continue;
+              const sx = (pVec.x * 0.5 + 0.5) * w;
+              const sy = (-pVec.y * 0.5 + 0.5) * h;
+              if (sx < -80 || sx > w + 80 || sy < -80 || sy > h + 80) continue;
+              const size = Math.max(6, Math.min(95, (w * 0.62) / Math.sqrt(distSq)));
+              drawList.push({
+                distSq,
+                sx,
+                sy,
+                size,
+                col: BD[b]?.c ?? 0x5dbb40,
+                isTorch: b === BT.TORCH,
+              });
+            }
+          }
+        }
+        drawList.sort((a, b) => b.distSq - a.distSq);
+        for (const item of drawList) {
+          const r = (item.col >> 16) & 255;
+          const g = (item.col >> 8) & 255;
+          const bl = item.col & 255;
+          const hs = item.size * 0.5;
+          ctx.fillStyle = `rgb(${r},${g},${bl})`;
+          ctx.fillRect(item.sx - hs, item.sy - hs, item.size, item.size);
+          ctx.strokeStyle = 'rgba(0,0,0,0.28)';
+          ctx.strokeRect(item.sx - hs, item.sy - hs, item.size, item.size);
+          if (item.isTorch) {
+            const tg = ctx.createRadialGradient(item.sx, item.sy, 2, item.sx, item.sy, item.size * 1.8);
+            tg.addColorStop(0, 'rgba(255, 200, 60, 0.85)');
+            tg.addColorStop(1, 'rgba(255, 140, 0, 0)');
+            ctx.fillStyle = tg;
+            ctx.beginPath();
+            ctx.arc(item.sx, item.sy, item.size * 1.8, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
     }
 
     loop();
 
     const onResize = () => {
       renderer.setSize(window.innerWidth, window.innerHeight);
+      composer?.setSize(window.innerWidth, window.innerHeight);
       cam1.aspect = window.innerWidth / window.innerHeight;
       cam1.updateProjectionMatrix();
     };
@@ -3712,12 +3957,14 @@ export function App() {
       if (peerInstance) peerInstance.destroy();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onWindowBlur);
       document.removeEventListener('pointerlockchange', onPointerLockChange);
       document.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('wheel', onWheel);
       window.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('resize', onResize);
       renderer.domElement.removeEventListener('mousedown', onMouseDown);
+      composer?.dispose();
       renderer.dispose();
     };
   }, []);
@@ -4048,28 +4295,100 @@ export function App() {
         </div>
       </div>
 
-      {/* Top HUD Bar — Incluye Brújula HUD Minimalista en la Esquina Superior Izquierda */}
-      <div className="fixed top-4 inset-x-4 flex flex-wrap items-start justify-between gap-2 z-20 pointer-events-none">
-        {/* Esquina Superior Izquierda: Brújula HUD Minimalista + Estado del Jugador */}
-        <div className="flex flex-col gap-2 pointer-events-auto">
-          {/* Brújula HUD Minimalista de Aldeanos Perdidos */}
+      {/* Requisito 1: Top HUD Bar Limpio y Responsivo
+          - En PC ningún panel tapa el centro de la visión (solo esquinas superiores).
+          - Botones de selección de modo ocultos durante la partida (solo en el Lobby).
+          - Brújula de rescate y panel de estadísticas avanzadas ocultos por defecto (solo visibles al mantener presionada la tecla TAB). */}
+      <div
+        id="topHudBar"
+        className="fixed top-3 inset-x-3 flex items-start justify-between gap-2 z-20 pointer-events-none"
+      >
+        {/* Esquina Superior Izquierda: Corazones Esenciales + Paneles Ocultables con [TAB] */}
+        <div className="flex flex-col gap-1.5 pointer-events-auto max-w-[46vw]">
+          {/* Barra compacta siempre visible: Vida + Acciones Rápidas */}
+          <div
+            id="hudEssentialLeft"
+            className="
+              inf flex flex-col gap-1 px-3 py-2 rounded-2xl
+              bg-[rgba(10,10,15,0.62)] backdrop-blur-md
+              border border-emerald-400/25
+              text-xs text-slate-200
+            "
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div id="hp1" className="hpbar flex items-center gap-0.5" />
+              <span className="text-[10px] font-mono text-emerald-300/90 px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-400/30">
+                [TAB] Info
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[11px]">
+              <button
+                id="btnChangeClothes"
+                type="button"
+                onClick={() => actionsRef.current?.changeClothes()}
+                className="
+                  px-2 py-0.5 rounded-lg bg-purple-500/25 hover:bg-purple-500/40
+                  border border-purple-400/50 text-purple-200 font-semibold transition cursor-pointer
+                  flex items-center gap-1
+                "
+              >
+                <span
+                  className="w-2 h-2 rounded-full border border-white/60 inline-block"
+                  style={{ backgroundColor: currentClothes.css }}
+                />
+                👕 Ropa
+              </button>
+
+              <button
+                id="btnOpenChat"
+                type="button"
+                onClick={() => {
+                  setIsChatOpen(true);
+                  if (document.pointerLockElement) document.exitPointerLock();
+                }}
+                className="
+                  px-2 py-0.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/35
+                  border border-cyan-400/50 text-cyan-200 font-semibold transition cursor-pointer
+                "
+              >
+                💬 Chat [T]
+              </button>
+
+              <button
+                id="btnOpenQuickCraftHud"
+                type="button"
+                onClick={() => actionsRef.current?.toggleQuickCraftModal()}
+                className="
+                  px-2.5 py-0.5 rounded-lg bg-emerald-500/25 hover:bg-emerald-500/40
+                  border border-emerald-400/60 text-emerald-200 font-bold
+                  transition cursor-pointer
+                "
+              >
+                ⚡ Crafteo [X]
+              </button>
+            </div>
+          </div>
+
+          {/* PANEL OCULTABLE 1 (Solo visible mientras se mantiene presionada la tecla TAB): Brújula de Rescate */}
           <div
             id="villagerCompassHud"
+            style={{ display: isTabHeld ? 'flex' : 'none' }}
             className="
-              flex items-center gap-3 px-3.5 py-2 rounded-2xl
-              bg-[rgba(10,12,18,0.75)] backdrop-blur-md
-              border border-amber-400/35
-              shadow-[0_6px_24px_rgba(0,0,0,0.45),0_0_16px_rgba(251,191,36,0.15)]
+              items-center gap-2.5 px-3 py-2 rounded-2xl
+              bg-[rgba(10,12,18,0.82)] backdrop-blur-md
+              border border-amber-400/40
+              shadow-[0_0_20px_rgba(251,191,36,0.2)]
               text-xs text-slate-100
             "
           >
-            <div className="relative w-8 h-8 rounded-full bg-slate-900/90 border border-amber-400/50 flex items-center justify-center shrink-0">
+            <div className="relative w-7 h-7 rounded-full bg-slate-900/90 border border-amber-400/50 flex items-center justify-center shrink-0">
               <div
                 id="compassNeedle"
                 style={{ transform: `rotate(${compassState.relativeAngleDeg}deg)` }}
                 className="transition-transform duration-150 flex items-center justify-center"
               >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                   <path d="M12 2L16 14H8L12 2Z" fill="#fbbf24" />
                   <path d="M12 22L8 14H16L12 22Z" fill="#64748b" />
                 </svg>
@@ -4092,18 +4411,20 @@ export function App() {
             </div>
           </div>
 
-          {/* Player Status Card */}
+          {/* PANEL OCULTABLE 2 (Solo visible mientras se mantiene presionada la tecla TAB): Estadísticas Avanzadas */}
           <div
+            id="advancedStatsPanel"
+            style={{ display: isTabHeld ? 'flex' : 'none' }}
             className="
-              inf flex flex-col gap-1.5 px-4 py-2.5 rounded-2xl
-              bg-[rgba(10,10,15,0.65)] backdrop-blur-md
-              border border-emerald-400/25
-              shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_18px_rgba(16,185,129,0.12)]
+              inf flex-col gap-1 px-3.5 py-2 rounded-2xl
+              bg-[rgba(10,12,18,0.82)] backdrop-blur-md
+              border border-cyan-400/35
+              shadow-[0_0_20px_rgba(34,211,238,0.18)]
               text-xs text-slate-200
             "
           >
-            <div className="flex items-center gap-2.5">
-              <span className="font-bold tracking-wider uppercase text-emerald-400">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-bold uppercase text-emerald-400">
                 {gameMode === 'build_battle'
                   ? '🏰 Batalla Construcción'
                   : gameMode === 'red_light'
@@ -4118,189 +4439,68 @@ export function App() {
               <span id="bones1" className="font-mono text-amber-300">
                 🦴 3
               </span>
-              <span className="text-slate-500">|</span>
-              <span className="font-mono text-emerald-300">
-                🪵 <span id="woodCountHud">{woodCount}</span> · 📦 <span id="plankCountHud">{plankCount}</span> · 🧶{' '}
-                <span id="woolCountHud">{woolCount}</span>
-              </span>
             </div>
-            <div id="hp1" className="hpbar flex items-center gap-0.5" />
-
-            <div className="flex flex-wrap items-center gap-2 pt-0.5 text-[11px]">
-              {roomCode ? (
-                <span className="px-2 py-0.5 rounded-md bg-cyan-500/20 border border-cyan-400/40 text-cyan-200 font-mono font-bold">
-                  🌐 Sala: {roomCode} ({peerCount} jug.)
-                </span>
-              ) : (
-                <span className="px-2 py-0.5 rounded-md bg-slate-800/80 border border-white/10 text-slate-400">
-                  👤 16x16 Voxel Clásico
-                </span>
-              )}
-
-              <button
-                id="btnChangeClothes"
-                type="button"
-                onClick={() => actionsRef.current?.changeClothes()}
-                className="
-                  px-2.5 py-0.5 rounded-lg bg-purple-500/25 hover:bg-purple-500/40
-                  border border-purple-400/50 text-purple-200 font-semibold transition cursor-pointer
-                  flex items-center gap-1.5
-                "
-              >
-                <span
-                  className="w-2.5 h-2.5 rounded-full border border-white/60 inline-block"
-                  style={{ backgroundColor: currentClothes.css }}
-                />
-                👕 Ropa ({currentClothes.name})
-              </button>
-
-              <button
-                id="btnOpenChat"
-                type="button"
-                onClick={() => {
-                  setIsChatOpen(true);
-                  if (document.pointerLockElement) document.exitPointerLock();
-                }}
-                className="
-                  px-2.5 py-0.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/35
-                  border border-cyan-400/50 text-cyan-200 font-semibold transition cursor-pointer
-                "
-              >
-                💬 Chat [T]
-              </button>
+            <div className="font-mono text-emerald-300 text-[11px]">
+              🪵 Madera: <span id="woodCountHud">{woodCount}</span> · 📦 Tablones:{' '}
+              <span id="plankCountHud">{plankCount}</span> · 🧶 Lana:{' '}
+              <span id="woolCountHud">{woolCount}</span>
+            </div>
+            <div className="text-[10px] text-slate-400">
+              {roomCode
+                ? `🌐 Sala Activa: ${roomCode} (${peerCount} jug.)`
+                : '💡 Clic Der en 🪑 Mesa abre Catálogo · Antorchas repelen arañas (5m)'}
             </div>
           </div>
         </div>
 
-        {/* Panel Central: Selector Rápido de Modos del Anfitrión, Clima, Luz Roja y Crafteo Rápido [X] */}
+        {/* Esquina Superior Derecha: Clima, Ciclo Solar y Guardado (sin tapar el centro de la visión) */}
         <div
+          id="hudWeatherPanel"
           className="
-            pointer-events-auto flex flex-col items-center gap-1.5 px-5 py-2.5 rounded-2xl
-            bg-[rgba(10,10,15,0.68)] backdrop-blur-md
+            inf pointer-events-auto flex items-center gap-2 px-3.5 py-2 rounded-2xl
+            bg-[rgba(10,10,15,0.62)] backdrop-blur-md
             border border-cyan-400/30
-            shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_20px_rgba(34,211,238,0.16)]
+            text-xs text-slate-200
           "
         >
-          <div className="flex items-center gap-2">
-            <span
-              id="dn"
-              className="text-xs font-semibold tracking-wide text-emerald-300 drop-shadow-[0_0_8px_rgba(52,211,153,0.6)]"
-            >
-              ☀️ Día
-            </span>
-            <span className="text-slate-600">•</span>
+          <span
+            id="dn"
+            className="text-xs font-semibold tracking-wide text-emerald-300 drop-shadow-[0_0_8px_rgba(52,211,153,0.6)]"
+          >
+            ☀️ Día
+          </span>
+          <button
+            id="btnCycleWeather"
+            type="button"
+            onClick={() => actionsRef.current?.cycleWeather()}
+            className="px-2 py-0.5 rounded-md bg-sky-500/20 hover:bg-sky-500/35 border border-sky-400/40 text-[11px] font-semibold text-sky-200 cursor-pointer"
+          >
+            {weatherBadge}
+          </button>
+
+          {isHost && challengeState !== 'off' && (
             <button
-              id="btnCycleWeather"
+              id="btnForceRedLight"
               type="button"
-              onClick={() => actionsRef.current?.cycleWeather()}
-              className="px-2 py-0.5 rounded-md bg-sky-500/20 hover:bg-sky-500/35 border border-sky-400/40 text-[11px] font-semibold text-sky-200 cursor-pointer"
+              onClick={() =>
+                actionsRef.current?.setRedGreenPhaseExplicit(
+                  challengeState === 'red' ? 'green' : 'red'
+                )
+              }
+              className="px-2 py-0.5 rounded-md bg-amber-500/25 hover:bg-amber-500/40 border border-amber-400/60 text-[11px] font-bold text-amber-200 cursor-pointer"
             >
-              {weatherBadge}
+              {challengeState === 'red' ? '🟢 Verde' : '🔴 Roja'}
             </button>
-            <span className="text-slate-600">•</span>
-            <span className="text-[11px] font-medium text-amber-300">
-              🎨 Píxel Clásico 16x16
-            </span>
-          </div>
+          )}
 
-          <div className="flex flex-wrap items-center justify-center gap-1.5 pt-0.5">
-            {isHost && (
-              <>
-                <button
-                  id="btnHudSurvival"
-                  type="button"
-                  onClick={() => actionsRef.current?.selectGameMode('survival')}
-                  className={`px-2.5 py-1 rounded-lg font-bold text-[11px] cursor-pointer border ${
-                    gameMode === 'survival'
-                      ? 'bg-emerald-500/35 border-emerald-400 text-emerald-200'
-                      : 'bg-slate-800/80 border-white/15 text-slate-300'
-                  }`}
-                >
-                  🌲 Supervivencia
-                </button>
-                <button
-                  id="btnStartRedGreenLight"
-                  type="button"
-                  onClick={() => actionsRef.current?.selectGameMode('red_light')}
-                  className={`px-2.5 py-1 rounded-lg font-bold text-[11px] cursor-pointer border ${
-                    gameMode === 'red_light' || challengeState !== 'off'
-                      ? 'bg-rose-500/35 border-rose-400 text-rose-200'
-                      : 'bg-slate-800/80 border-white/15 text-slate-300'
-                  }`}
-                >
-                  🚦 Luz Roja
-                </button>
-                <button
-                  id="btnHudBuildBattle"
-                  type="button"
-                  onClick={() => actionsRef.current?.selectGameMode('build_battle', buildBattleOpponent)}
-                  className={`px-2.5 py-1 rounded-lg font-bold text-[11px] cursor-pointer border ${
-                    gameMode === 'build_battle'
-                      ? 'bg-amber-500/35 border-amber-400 text-amber-200'
-                      : 'bg-slate-800/80 border-white/15 text-slate-300'
-                  }`}
-                >
-                  🏰 Batalla Construcción
-                </button>
-              </>
-            )}
-
-            {isHost && challengeState !== 'off' && (
-              <button
-                id="btnForceRedLight"
-                type="button"
-                onClick={() =>
-                  actionsRef.current?.setRedGreenPhaseExplicit(
-                    challengeState === 'red' ? 'green' : 'red'
-                  )
-                }
-                className="px-2.5 py-1 rounded-lg bg-amber-500/25 hover:bg-amber-500/40 border border-amber-400/60 text-[11px] font-bold text-amber-200 cursor-pointer"
-              >
-                {challengeState === 'red' ? '🟢 Cambiar a Verde' : '🔴 Cambiar a Roja'}
-              </button>
-            )}
-
-            <button
-              id="btnOpenQuickCraftHud"
-              type="button"
-              onClick={() => actionsRef.current?.toggleQuickCraftModal()}
-              className="
-                px-3 py-1 rounded-lg bg-emerald-500/25 hover:bg-emerald-500/40
-                border border-emerald-400/60 text-[11px] font-bold text-emerald-200
-                transition cursor-pointer
-              "
-            >
-              ⚡ Crafteo [X]
-            </button>
-          </div>
-        </div>
-
-        {/* Guía Rápida & Guardado */}
-        <div
-          className="
-            inf hidden lg:flex flex-col gap-1 px-4 py-2.5 rounded-2xl
-            bg-[rgba(10,10,15,0.65)] backdrop-blur-md
-            border border-white/10 text-[11px] text-slate-300 pointer-events-auto
-          "
-        >
-          <div className="flex items-center justify-between gap-3">
-            <span>
-              <strong className="text-emerald-300">X</strong> Crafteo Rápido ·{' '}
-              <strong className="text-emerald-300">T</strong> Chat ·{' '}
-              <strong className="text-emerald-300">E</strong> Mochila
-            </span>
-            <button
-              type="button"
-              onClick={() => actionsRef.current?.saveGame()}
-              className="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/40 text-emerald-200 font-semibold cursor-pointer"
-            >
-              💾 Guardar
-            </button>
-          </div>
-          <div>
-            <strong className="text-cyan-300">Clic Izq</strong> Romper / PvP ·{' '}
-            <strong className="text-amber-300">Clic Der en 🪑 Mesa</strong> Catálogo Avanzado
-          </div>
+          <button
+            id="btnHudSave"
+            type="button"
+            onClick={() => actionsRef.current?.saveGame()}
+            className="px-2 py-0.5 rounded-md bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/40 text-[11px] text-emerald-200 font-semibold cursor-pointer"
+          >
+            💾 Guardar
+          </button>
         </div>
       </div>
 
@@ -4443,7 +4643,10 @@ export function App() {
       )}
 
       {/* Bottom Centered Hotbar */}
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1.5 pointer-events-auto">
+      <div
+        id="bottomHotbarWrap"
+        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1.5 pointer-events-auto"
+      >
         <div
           id="activeBlockLabel"
           className="
@@ -4772,10 +4975,10 @@ export function App() {
               <div className="p-3 rounded-2xl bg-slate-900/75 border border-amber-400/50 flex items-center justify-between gap-2 sm:col-span-2">
                 <div>
                   <div className="text-sm font-bold text-amber-300">
-                    🕯️ Antorchas (Luz Dinámica en la Noche)
+                    🕯️ Antorchas (Luz PointLight + Repelente de Arañas)
                   </div>
                   <div className="text-xs text-slate-400">
-                    1 🪵 Madera (o Tablón) + 1 🥢 Palo ➔ 4 🕯️ Antorchas luminosas
+                    1 🥢 Palo + 1 📦 Tablón ➔ 4 🕯️ Antorchas (Ahuyenta arañas en radio de 5 bloques)
                   </div>
                 </div>
                 <button

@@ -200,7 +200,7 @@ export interface EntityData {
     | 'villager';
   pos: Vec3Like;
   vel: Vec3Like;
-  state: 'idle' | 'chase' | 'windup' | 'ko';
+  state: 'idle' | 'chase' | 'windup' | 'ko' | 'panic';
   timer: number;
   windupTimer: number;
   hitFlashTimer: number;
@@ -890,7 +890,8 @@ export function craftChestLogic(pl: PlayerState): {
 }
 
 /**
- * Receta Mesa Avanzada: 1 Madera (o 1 Tablón) + 1 Palo ➔ 4 Antorchas (BT.TORCH) que emiten luz dinámica en la noche
+ * Receta Mesa de Crafteo: 1 Palo (BT.STICK) + 1 Tablón (BT.PLANK) ➔ Antorcha (BT.TORCH)
+ * También acepta 1 Madera + 1 Palo como respaldo.
  */
 export function craftTorchesLogic(pl: PlayerState): {
   crafted: boolean;
@@ -899,10 +900,10 @@ export function craftTorchesLogic(pl: PlayerState): {
   if (countItemInInventory(pl, BT.STICK) < 1) {
     return { crafted: false, torchesTotal: countItemInInventory(pl, BT.TORCH) };
   }
-  if (countItemInInventory(pl, BT.WOOD) >= 1) {
-    consumeItemFromInventory(pl, BT.WOOD, 1);
-  } else if (countItemInInventory(pl, BT.PLANK) >= 1) {
+  if (countItemInInventory(pl, BT.PLANK) >= 1) {
     consumeItemFromInventory(pl, BT.PLANK, 1);
+  } else if (countItemInInventory(pl, BT.WOOD) >= 1) {
+    consumeItemFromInventory(pl, BT.WOOD, 1);
   } else {
     return { crafted: false, torchesTotal: countItemInInventory(pl, BT.TORCH) };
   }
@@ -1178,11 +1179,50 @@ function getEntitySupportGroundY(
   return maxSurfaceY + 1.0;
 }
 
+export const TORCH_REPELLENT_RADIUS = 5.0;
+
+/**
+ * Requisito 3: Chequeo de proximidad a cualquier antorcha colocada (BT.TORCH) en un radio de 5 bloques.
+ */
+export function findNearestTorchWithinRadius(
+  world: InfiniteWorld,
+  pos: Vec3Like,
+  radius = TORCH_REPELLENT_RADIUS
+): { x: number; y: number; z: number; dist: number } | null {
+  let nearest: { x: number; y: number; z: number; dist: number } | null = null;
+  const rCeil = Math.ceil(radius);
+  const bx0 = Math.floor(pos.x);
+  const by0 = Math.floor(pos.y);
+  const bz0 = Math.floor(pos.z);
+
+  for (let dx = -rCeil; dx <= rCeil; dx++) {
+    for (let dz = -rCeil; dz <= rCeil; dz++) {
+      for (let dy = -4; dy <= 4; dy++) {
+        const bx = bx0 + dx;
+        const by = by0 + dy;
+        const bz = bz0 + dz;
+        if (by < 1 || by >= WH) continue;
+        if (gB(world, bx, by, bz) === BT.TORCH) {
+          const tx = bx + 0.5;
+          const ty = by + 0.5;
+          const tz = bz + 0.5;
+          const d = Math.hypot(pos.x - tx, pos.z - tz);
+          if (d <= radius && (!nearest || d < nearest.dist)) {
+            nearest = { x: tx, y: ty, z: tz, dist: d };
+          }
+        }
+      }
+    }
+  }
+  return nearest;
+}
+
 /**
  * Requisito 1: Corrección de Físicas en el eje Y para entidades (Animales y Lobos)
  * - Evita que el suelo bajo las patas sea detectado como muro lateral (offset Y +0.15)
  * - Permite subir escalones naturales de 1 bloque de pasto/tierra (auto-step) usando soporte en las 4 esquinas
  * - Garantiza que nunca se hundan por debajo de groundY (surfaceY + 1.0)
+ * - Impide que las arañas entren a zonas iluminadas por antorchas (radio 5 bloques)
  */
 export function stepEntityMovementWithCollision(
   world: InfiniteWorld,
@@ -1199,8 +1239,33 @@ export function stepEntityMovementWithCollision(
     if (e.vel.y < 0) e.vel.y = 0;
   }
 
-  const nx = e.pos.x + e.vel.x * clampedDt;
-  const nz = e.pos.z + e.vel.z * clampedDt;
+  let nx = e.pos.x + e.vel.x * clampedDt;
+  let nz = e.pos.z + e.vel.z * clampedDt;
+
+  // Requisito 3: Las arañas no pueden entrar a zonas iluminadas por antorchas (radio 5 bloques)
+  if (e.type === 'spider') {
+    const torchNearNext = findNearestTorchWithinRadius(
+      world,
+      { x: nx, y: e.pos.y, z: nz },
+      TORCH_REPELLENT_RADIUS
+    );
+    if (torchNearNext) {
+      e.state = 'panic';
+      let awayX = e.pos.x - torchNearNext.x;
+      let awayZ = e.pos.z - torchNearNext.z;
+      const len = Math.hypot(awayX, awayZ);
+      if (len < 0.01) {
+        awayX = -(e.vel.x || 1);
+        awayZ = -(e.vel.z || 1);
+      }
+      const norm = Math.hypot(awayX, awayZ) || 1;
+      const fleeSpd = 6.2;
+      e.vel.x = (awayX / norm) * fleeSpd;
+      e.vel.z = (awayZ / norm) * fleeSpd;
+      nx = e.pos.x + e.vel.x * clampedDt;
+      nz = e.pos.z + e.vel.z * clampedDt;
+    }
+  }
 
   // Movimiento en X con soporte para subir escalón de 1 bloque (auto-step)
   if (!checkWallX(world, nx, e.pos.y + 0.15, e.pos.z)) {
@@ -1606,19 +1671,114 @@ export function stepPlayerPhysics(
  * Romper bloques: si se rompe cualquier mitad de una Puerta de 2 bloques, se limpian ambas mitades y se recoge 1 Puerta.
  * Si el jugador usa un Pico de Madera o Pico de Piedra al picar Piedra, obtiene bonus de velocidad/recolección.
  */
+/**
+ * Requisito 2: Mapas de Desafío Indestructibles
+ * - En "Luz Roja" ('red_light'): Desactiva totalmente la capacidad de romper o poner bloques.
+ * - En "Batalla de Construcción" ('build_battle'): Los jugadores pueden romper los bloques que ellos pongan,
+ *   pero está ESTRICTAMENTE PROHIBIDO romper el piso de la arena (y <= BUILD_BATTLE_FLOOR_Y),
+ *   los bordes perimetrales y el muro divisor central (x === 0).
+ */
+export function isBuildBattleProtectedStructure(x: number, y: number, z: number): boolean {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const iz = Math.floor(z);
+  // Piso de la arena y subsuelo
+  if (iy <= BUILD_BATTLE_FLOOR_Y) return true;
+  // Muro central divisorio (x === 0, z entre -11 y 11, altura floorY+1 .. floorY+6)
+  if (ix === 0 && iz >= -11 && iz <= 11 && iy >= BUILD_BATTLE_FLOOR_Y + 1 && iy <= BUILD_BATTLE_FLOOR_Y + 6) {
+    return true;
+  }
+  // Borde perimetral de la arena
+  if ((Math.abs(ix) >= 16 || Math.abs(iz) >= 12) && iy <= BUILD_BATTLE_FLOOR_Y + 1) {
+    return true;
+  }
+  return false;
+}
+
+export function canBreakBlockInMode(
+  mode: GameModeType,
+  x: number,
+  y: number,
+  z: number,
+  playerPlacedBlocks?: Set<string>
+): { allowed: boolean; reason?: string } {
+  if (mode === 'red_light') {
+    return {
+      allowed: false,
+      reason: '🚫 En Luz Roja está desactivado romper bloques.',
+    };
+  }
+  if (mode === 'build_battle') {
+    if (isBuildBattleProtectedStructure(x, y, z)) {
+      return {
+        allowed: false,
+        reason: '🛡️ ¡Está prohibido romper el piso de la arena o el muro divisor!',
+      };
+    }
+    if (playerPlacedBlocks && !playerPlacedBlocks.has(blockKey(x, y, z))) {
+      return {
+        allowed: false,
+        reason: '🛡️ Solo puedes romper los bloques que tú hayas colocado.',
+      };
+    }
+  }
+  return { allowed: true };
+}
+
+export function canPlaceBlockInMode(
+  mode: GameModeType,
+  tx: number,
+  ty: number,
+  tz: number
+): { allowed: boolean; reason?: string } {
+  if (mode === 'red_light') {
+    return {
+      allowed: false,
+      reason: '🚫 En Luz Roja está desactivado colocar bloques.',
+    };
+  }
+  if (mode === 'build_battle') {
+    if (isBuildBattleProtectedStructure(tx, ty, tz)) {
+      return {
+        allowed: false,
+        reason: '🛡️ No puedes construir dentro del muro divisor ni bajo el piso de la arena.',
+      };
+    }
+  }
+  return { allowed: true };
+}
+
+/**
+ * Romper bloques (doBreak): si se rompe cualquier mitad de una Puerta de 2 bloques, se limpian ambas mitades y se recoge 1 Puerta.
+ * Si el jugador usa un Pico de Madera o Pico de Piedra al picar Piedra, obtiene bonus de velocidad/recolección.
+ * Aplica restricciones de mapas indestructibles según el modo activo.
+ */
 export function breakBlockLogic(
   world: InfiniteWorld,
   pl: PlayerState,
   x: number,
   y: number,
-  z: number
+  z: number,
+  mode: GameModeType = 'survival',
+  playerPlacedBlocks?: Set<string>
 ): {
   broken: boolean;
   oldType: number;
   collected: boolean;
   extraCleared?: { x: number; y: number; z: number };
   bonusYield?: number;
+  blockedReason?: string;
 } {
+  const check = canBreakBlockInMode(mode, x, y, z, playerPlacedBlocks);
+  if (!check.allowed) {
+    return {
+      broken: false,
+      oldType: gB(world, x, y, z),
+      collected: false,
+      blockedReason: check.reason,
+    };
+  }
+
   const t = gB(world, x, y, z);
   if (t === BT.AIR || t === BT.BEDROCK || t === BT.WATER) {
     return { broken: false, oldType: t, collected: false };
@@ -1632,13 +1792,16 @@ export function breakBlockLogic(
     if (gB(world, x, y + 1, z) === t) {
       sB(world, x, y + 1, z, BT.AIR);
       extraCleared = { x, y: y + 1, z };
+      playerPlacedBlocks?.delete(blockKey(x, y + 1, z));
     } else if (gB(world, x, y - 1, z) === t) {
       sB(world, x, y - 1, z, BT.AIR);
       extraCleared = { x, y: y - 1, z };
+      playerPlacedBlocks?.delete(blockKey(x, y - 1, z));
     }
   }
 
   sB(world, x, y, z, BT.AIR);
+  playerPlacedBlocks?.delete(blockKey(x, y, z));
   pl.blocksBroken++;
   pl.score += 5;
 
@@ -1650,7 +1813,10 @@ export function breakBlockLogic(
     else if (heldTool === BT.WOOD_PICKAXE) yieldAmount = 2;
   }
 
-  const { added } = addItemToInventory(pl, itemTypeToCollect, yieldAmount);
+  const { added } =
+    mode === 'build_battle'
+      ? { added: 0 }
+      : addItemToInventory(pl, itemTypeToCollect, yieldAmount);
   return {
     broken: true,
     oldType: t,
@@ -1661,7 +1827,8 @@ export function breakBlockLogic(
 }
 
 /**
- * Requisito 2: Colocar bloque — Si es una Puerta (BT.DOOR), ocupa automáticamente 2 bloques de altura: (tx, ty, tz) y (tx, ty + 1, tz).
+ * Colocar bloque (doPlace) — Si es una Puerta (BT.DOOR), ocupa automáticamente 2 bloques de altura: (tx, ty, tz) y (tx, ty + 1, tz).
+ * Aplica restricciones de mapas indestructibles según el modo activo.
  */
 export function placeBlockLogic(
   world: InfiniteWorld,
@@ -1672,7 +1839,9 @@ export function placeBlockLogic(
   nxNorm: number,
   nyNorm: number,
   nzNorm: number,
-  infiniteCreative = false
+  infiniteCreative = false,
+  mode: GameModeType = infiniteCreative ? 'build_battle' : 'survival',
+  playerPlacedBlocks?: Set<string>
 ): {
   placed: boolean;
   tx: number;
@@ -1680,7 +1849,24 @@ export function placeBlockLogic(
   tz: number;
   blockType: number;
   upperDoorPlaced?: boolean;
+  blockedReason?: string;
 } {
+  const tx = Math.floor(x) + Math.round(nxNorm);
+  const ty = Math.floor(y) + Math.round(nyNorm);
+  const tz = Math.floor(z) + Math.round(nzNorm);
+
+  const check = canPlaceBlockInMode(mode, tx, ty, tz);
+  if (!check.allowed) {
+    return {
+      placed: false,
+      tx,
+      ty,
+      tz,
+      blockType: 0,
+      blockedReason: check.reason,
+    };
+  }
+
   const activeSlot = pl.inventory[pl.si];
   if (!activeSlot || activeSlot.count <= 0 || activeSlot.type <= 0) {
     return { placed: false, tx: x, ty: y, tz: z, blockType: 0 };
@@ -1691,10 +1877,6 @@ export function placeBlockLogic(
   if (def?.isItemOnly) {
     return { placed: false, tx: x, ty: y, tz: z, blockType: 0 };
   }
-
-  const tx = Math.floor(x) + Math.round(nxNorm);
-  const ty = Math.floor(y) + Math.round(nyNorm);
-  const tz = Math.floor(z) + Math.round(nzNorm);
 
   if (ty < 1 || ty >= WH - 2) {
     return { placed: false, tx, ty, tz, blockType };
@@ -1729,6 +1911,8 @@ export function placeBlockLogic(
     }
     sB(world, tx, ty, tz, BT.DOOR);
     sB(world, tx, ty + 1, tz, BT.DOOR);
+    playerPlacedBlocks?.add(blockKey(tx, ty, tz));
+    playerPlacedBlocks?.add(blockKey(tx, ty + 1, tz));
     if (!infiniteCreative) {
       activeSlot.count -= 1;
       if (activeSlot.count <= 0) {
@@ -1743,6 +1927,7 @@ export function placeBlockLogic(
   }
 
   sB(world, tx, ty, tz, blockType);
+  playerPlacedBlocks?.add(blockKey(tx, ty, tz));
   if (!infiniteCreative) {
     activeSlot.count -= 1;
     if (activeSlot.count <= 0) {
@@ -1990,15 +2175,17 @@ export function stepEnemyCombatLogic(
   enemy: EntityData,
   pl: PlayerState,
   dt: number
-): { attacked: boolean; windupStarted: boolean; damageDealt: number; spiderJumped?: boolean } {
+): {
+  attacked: boolean;
+  windupStarted: boolean;
+  damageDealt: number;
+  spiderJumped?: boolean;
+  spiderPanicked?: boolean;
+} {
   if (!enemy.alive || enemy.state === 'ko') {
     return { attacked: false, windupStarted: false, damageDealt: 0 };
   }
 
-  const dist = distance3D(enemy.pos, pl.pos);
-  const canSee = hasLineOfSight(world, enemy.pos, pl.pos);
-
-  const chaseRange = enemy.type === 'enderman' ? 24 : enemy.type === 'spider' ? 18 : 15;
   const moveSpd =
     enemy.type === 'spider'
       ? 4.6
@@ -2007,6 +2194,37 @@ export function stepEnemyCombatLogic(
         : enemy.type === 'wolf'
           ? 4.0
           : 2.95;
+
+  // Requisito 3: Mecánica de Repelente de Arañas — Si una araña se acerca a un radio de 5 bloques
+  // de cualquier antorcha colocada, entra en estado de pánico, invierte su dirección y huye de la luz.
+  if (enemy.type === 'spider') {
+    const nearTorch = findNearestTorchWithinRadius(world, enemy.pos, TORCH_REPELLENT_RADIUS);
+    if (nearTorch) {
+      enemy.state = 'panic';
+      let awayX = enemy.pos.x - nearTorch.x;
+      let awayZ = enemy.pos.z - nearTorch.z;
+      const distHoriz = Math.hypot(awayX, awayZ);
+      if (distHoriz < 0.01) {
+        awayX = -(enemy.vel.x || 1);
+        awayZ = -(enemy.vel.z || 1);
+      }
+      const norm = Math.hypot(awayX, awayZ) || 1;
+      const panicSpeed = moveSpd * 1.35;
+      enemy.vel.x = (awayX / norm) * panicSpeed;
+      enemy.vel.z = (awayZ / norm) * panicSpeed;
+      return {
+        attacked: false,
+        windupStarted: false,
+        damageDealt: 0,
+        spiderPanicked: true,
+      };
+    }
+  }
+
+  const dist = distance3D(enemy.pos, pl.pos);
+  const canSee = hasLineOfSight(world, enemy.pos, pl.pos);
+
+  const chaseRange = enemy.type === 'enderman' ? 24 : enemy.type === 'spider' ? 18 : 15;
   const hitRange = enemy.type === 'enderman' ? 2.45 : enemy.type === 'spider' ? 2.15 : 1.95;
 
   let spiderJumped = false;
@@ -2034,10 +2252,36 @@ export function stepEnemyCombatLogic(
   enemy.timer = Math.max(0, enemy.timer - dt);
 
   if (dist < chaseRange && canSee) {
-    enemy.state = 'chase';
     const dx = pl.pos.x - enemy.pos.x;
     const dz = pl.pos.z - enemy.pos.z;
     const len = Math.hypot(dx, dz) || 1;
+    const nextStepX = enemy.pos.x + (dx / len) * moveSpd * Math.min(dt, 0.05);
+    const nextStepZ = enemy.pos.z + (dz / len) * moveSpd * Math.min(dt, 0.05);
+
+    // Si es una araña y avanzar hacia el jugador la metería dentro del radio de 5 bloques de una antorcha, entra en pánico y huye
+    if (enemy.type === 'spider') {
+      const torchAhead = findNearestTorchWithinRadius(
+        world,
+        { x: nextStepX, y: enemy.pos.y, z: nextStepZ },
+        TORCH_REPELLENT_RADIUS
+      );
+      if (torchAhead) {
+        enemy.state = 'panic';
+        const awayX = enemy.pos.x - torchAhead.x;
+        const awayZ = enemy.pos.z - torchAhead.z;
+        const norm = Math.hypot(awayX, awayZ) || 1;
+        enemy.vel.x = (awayX / norm) * (moveSpd * 1.35);
+        enemy.vel.z = (awayZ / norm) * (moveSpd * 1.35);
+        return {
+          attacked: false,
+          windupStarted: false,
+          damageDealt: 0,
+          spiderPanicked: true,
+        };
+      }
+    }
+
+    enemy.state = 'chase';
     enemy.vel.x = (dx / len) * moveSpd;
     enemy.vel.z = (dz / len) * moveSpd;
 

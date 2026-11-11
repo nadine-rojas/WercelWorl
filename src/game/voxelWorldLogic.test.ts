@@ -55,6 +55,9 @@ import {
   getAiHouseBlueprint,
   stepAiBuilderBot,
   setupRedLightArena,
+  stepEnemyCombatLogic,
+  findNearestTorchWithinRadius,
+  TORCH_REPELLENT_RADIUS,
   type EntityData,
 } from './voxelWorldLogic';
 
@@ -524,6 +527,104 @@ test('Build Battle mode builds flat arena with dividing wall, infinite creative 
   assert.equal(gB(world, -8, 11, 0), BT.BRICK, 'Closed Red Light arena wall exists');
   assert.equal(gB(world, 0, 10, rlArena.finishZ), BT.GOLD, 'Red Light finish line is Gold');
 });
+
+test('Indestructible challenge maps (Red Light & Build Battle), 1 Stick + 1 Plank -> Torch recipe, and Spider 5-block Torch Repellent panic AI', () => {
+  const world = createInfiniteWorld();
+  const pl = createPlayer();
+
+  // 1. Recipe: 1 Palo (BT.STICK) + 1 Tablón (BT.PLANK) -> Antorcha (BT.TORCH) without needing raw Wood
+  addItemToInventory(pl, BT.STICK, 1);
+  addItemToInventory(pl, BT.PLANK, 1);
+  const torchCraft = craftTorchesLogic(pl);
+  assert.equal(torchCraft.crafted, true, '1 Stick + 1 Plank crafts Torches');
+  assert.equal(torchCraft.torchesTotal, 4);
+  assert.equal(countItemInInventory(pl, BT.STICK), 0);
+  assert.equal(countItemInInventory(pl, BT.PLANK), 0);
+
+  // 2. Red Light mode: breaking and placing blocks are completely disabled
+  setupRedLightArena(world);
+  addItemToInventory(pl, BT.GOLD, 5);
+  pl.si = pl.inventory.findIndex((s) => s && s.type === BT.GOLD);
+  const rlBreak = breakBlockLogic(world, pl, 0, 10, 0, 'red_light');
+  assert.equal(rlBreak.broken, false, 'Cannot break floor in Red Light');
+  assert.ok(rlBreak.blockedReason);
+
+  const rlPlace = placeBlockLogic(world, pl, 0, 10, 0, 0, 1, 0, false, 'red_light');
+  assert.equal(rlPlace.placed, false, 'Cannot place blocks in Red Light');
+  assert.ok(rlPlace.blockedReason);
+
+  // 3. Build Battle mode: cannot break arena floor or central dividing wall, CAN break own placed blocks
+  const arena = setupBuildBattleArena(world);
+  equipBuildBattleCreativeInventory(pl);
+  pl.pos = { ...arena.playerSpawn };
+  const playerPlaced = new Set<string>();
+
+  const breakFloor = breakBlockLogic(world, pl, -4, arena.floorY, 0, 'build_battle', playerPlaced);
+  assert.equal(breakFloor.broken, false, 'Strictly forbidden to break Build Battle arena floor');
+
+  const breakWall = breakBlockLogic(world, pl, 0, arena.floorY + 2, 0, 'build_battle', playerPlaced);
+  assert.equal(breakWall.broken, false, 'Strictly forbidden to break Build Battle dividing wall');
+
+  const placeOwn = placeBlockLogic(
+    world,
+    pl,
+    -4,
+    arena.floorY,
+    0,
+    0,
+    1,
+    0,
+    true,
+    'build_battle',
+    playerPlaced
+  );
+  assert.equal(placeOwn.placed, true);
+  assert.equal(gB(world, -4, arena.floorY + 1, 0), BT.GOLD);
+
+  const breakOwn = breakBlockLogic(world, pl, -4, arena.floorY + 1, 0, 'build_battle', playerPlaced);
+  assert.equal(breakOwn.broken, true, 'Player can break blocks they placed in Build Battle');
+  assert.equal(gB(world, -4, arena.floorY + 1, 0), BT.AIR);
+
+  // 4. Spider Torch Repellent: Spider within 5 blocks of any placed torch enters panic state, inverts direction, and flees
+  sB(world, -12, arena.floorY + 1, 0, BT.TORCH);
+  const torchFound = findNearestTorchWithinRadius(
+    world,
+    { x: -9.0, y: arena.floorY + 1, z: 0.5 },
+    TORCH_REPELLENT_RADIUS
+  );
+  assert.ok(torchFound !== null, 'Detects torch within 5-block radius');
+
+  const spider: EntityData = {
+    id: 501,
+    type: 'spider',
+    pos: { x: -9.0, y: arena.floorY + 1, z: 0.5 }, // 2.5 blocks away from torch at (-11.5, y, 0.5)
+    vel: { x: -4.0, y: 0, z: 0 }, // Moving toward torch
+    state: 'chase',
+    timer: 0,
+    windupTimer: 0,
+    hitFlashTimer: 0,
+    koTimer: 0,
+    alive: true,
+    hp: 12,
+    maxHp: 12,
+  };
+
+  const startDistToTorch = Math.hypot(spider.pos.x - -11.5, spider.pos.z - 0.5);
+  assert.ok(startDistToTorch <= 5.0);
+
+  const combatRes = stepEnemyCombatLogic(world, spider, pl, 0.05);
+  assert.equal(combatRes.spiderPanicked, true, 'Spider panics when within 5 blocks of a torch');
+  assert.equal(spider.state, 'panic');
+  assert.ok(spider.vel.x > 0, 'Spider inverted movement direction to flee away from the torch at x=-11.5');
+
+  for (let i = 0; i < 15; i++) {
+    stepEnemyCombatLogic(world, spider, pl, 0.05);
+    stepEntityMovementWithCollision(world, spider, 0.05);
+  }
+  const endDistToTorch = Math.hypot(spider.pos.x - -11.5, spider.pos.z - 0.5);
+  assert.ok(endDistToTorch > 5.0, 'Spider fled outside the 5-block illuminated torch radius');
+});
+
 
 
 

@@ -16,11 +16,105 @@
   }
 }
 
-/* Dark Glassmorphism HUD base classes (.hb, .hpbar, .inf) */
+/* Dark Glassmorphism HUD base classes (.hb, .hpbar, .inf) con brillo envolvente (bloom suave) */
 .hb,
 .hpbar,
 .inf {
-  background: rgba(10, 10, 15, 0.6);
+  background: rgba(10, 10, 15, 0.62);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 0 18px rgba(52, 211, 153, 0.14);
 }
+
+/* Requisito 1: Diseño Responsivo del HUD en Móviles (@media (max-width: 768px))
+   Reduce a la mitad el tamaño de las fuentes, los márgenes y los iconos para que no estorben con el joystick */
+@media (max-width: 768px) {
+  #topHudBar {
+    top: 0.35rem !important;
+    left: 0.35rem !important;
+    right: 0.35rem !important;
+    gap: 0.25rem !important;
+  }
+
+  .inf,
+  #villagerCompassHud,
+  #advancedStatsPanel,
+  #hudWeatherPanel {
+    padding: 0.25rem 0.45rem !important;
+    gap: 0.2rem !important;
+    font-size: 0.55rem !important;
+    line-height: 1.1 !important;
+    border-radius: 0.5rem !important;
+  }
+
+  .inf button,
+  #hudWeatherPanel button {
+    padding: 0.12rem 0.32rem !important;
+    font-size: 0.52rem !important;
+    border-radius: 0.3rem !important;
+  }
+
+  /* Corazones de vida a la mitad de tamaño en móvil */
+  .ht {
+    font-size: 0.65rem !important;
+    line-height: 1 !important;
+  }
+
+  /* Hotbar inferior compacta a la mitad para no estorbar al joystick ni botones táctiles */
+  #bottomHotbarWrap {
+    bottom: 0.3rem !important;
+    gap: 0.18rem !important;
+  }
+
+  #activeBlockLabel {
+    font-size: 0.52rem !important;
+    padding: 0.12rem 0.45rem !important;
+    max-width: 62vw !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+
+  #hb1 {
+    padding: 0.22rem !important;
+    gap: 0.18rem !important;
+    border-radius: 0.55rem !important;
+  }
+
+  #hb1 .hs {
+    width: 1.55rem !important;
+    height: 1.55rem !important;
+    border-radius: 0.35rem !important;
+  }
+
+  #hb1 .hs .sn {
+    font-size: 0.42rem !important;
+    top: 1px !important;
+    left: 2px !important;
+  }
+
+  #hb1 .hs .slot-icon {
+    font-size: 0.72rem !important;
+  }
+
+  #hb1 .hs .slot-count {
+    font-size: 0.44rem !important;
+    bottom: 0px !important;
+    right: 1px !important;
+  }
+
+  #redGreenBanner > div {
+    padding: 0.35rem 0.75rem !important;
+    font-size: 0.85rem !important;
+  }
+
+  #buildBattleTimerBanner > div {
+    padding: 0.3rem 0.6rem !important;
+    gap: 0.4rem !important;
+  }
+
+  #buildBattleTimerText {
+    font-size: 1.15rem !important;
+  }
+}
+
