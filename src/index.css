@@ -16,13 +16,11 @@
   }
 }
 
-/* Dark Glassmorphism HUD base classes (.hb, .hpbar, .inf) con brillo envolvente (bloom suave) */
+/* Dark HUD base classes (.hb, .hpbar, .inf) con brillo envolvente (sin backdrop-filter sobre WebGL) */
 .hb,
 .hpbar,
 .inf {
-  background: rgba(10, 10, 15, 0.62);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(10, 12, 18, 0.78);
   box-shadow: 0 0 18px rgba(52, 211, 153, 0.14);
 }
 

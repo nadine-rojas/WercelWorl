@@ -579,104 +579,49 @@ export function App() {
       }
     };
 
-    // ─── RENDERER & SCENE PBR (CON FALLBACK 2D 3D-PROJECTED SI WEBGL ESTÁ DESHABILITADO) ───
-    const mainCanvas = document.createElement('canvas');
-    mainCanvas.id = 'c';
-    mainCanvas.width = window.innerWidth;
-    mainCanvas.height = window.innerHeight;
-    mainCanvas.className = 'block w-full h-full cursor-crosshair select-none';
-    container.innerHTML = '';
-    container.appendChild(mainCanvas);
+    // ─── RENDERER 3D DIRECTO CON OPCIONES DE MÁXIMA COMPATIBILIDAD ───
+    const renderer = new THREE.WebGLRenderer({
+      antialias: false,
+      alpha: false,
+      powerPreference: 'high-performance',
+    });
 
-    let glContext: WebGLRenderingContext | WebGL2RenderingContext | null = null;
+    let isSoftwareGl = false;
     try {
-      glContext =
-        (mainCanvas.getContext('webgl2', { antialias: true }) as WebGL2RenderingContext | null) ||
-        (mainCanvas.getContext('webgl', { antialias: true }) as WebGLRenderingContext | null) ||
-        (mainCanvas.getContext('webgl2', {
-          antialias: false,
-          failIfMajorPerformanceCaveat: false,
-        }) as WebGL2RenderingContext | null) ||
-        (mainCanvas.getContext('webgl', {
-          antialias: false,
-          failIfMajorPerformanceCaveat: false,
-        }) as WebGLRenderingContext | null) ||
-        (mainCanvas.getContext('experimental-webgl') as WebGLRenderingContext | null);
+      const gl = renderer.getContext();
+      const dbgExt = gl.getExtension('WEBGL_debug_renderer_info');
+      const param = dbgExt ? dbgExt.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
+      const gpuStr = String(gl.getParameter(param) || '');
+      isSoftwareGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpuStr);
     } catch {
-      glContext = null;
+      isSoftwareGl = false;
     }
 
-    let webglRenderer: THREE.WebGLRenderer | null = null;
-    let fallbackCanvas: HTMLCanvasElement = mainCanvas;
-    let fallbackCtx2D: CanvasRenderingContext2D | null = null;
-
-    if (glContext) {
-      try {
-        webglRenderer = new THREE.WebGLRenderer({
-          canvas: mainCanvas,
-          context: glContext as WebGLRenderingContext,
-          antialias: true,
-        });
-        webglRenderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
-        webglRenderer.setSize(window.innerWidth, window.innerHeight);
-        webglRenderer.toneMapping = THREE.ACESFilmicToneMapping;
-        webglRenderer.toneMappingExposure = 1.08;
-      } catch {
-        webglRenderer = null;
-      }
-    }
-
-    if (!webglRenderer) {
-      // Si el navegador tiene WebGL deshabilitado (GL_VENDOR = Disabled), usar un nuevo canvas 2D limpio
-      const swCanvas = document.createElement('canvas');
-      swCanvas.id = 'c';
-      swCanvas.width = window.innerWidth;
-      swCanvas.height = window.innerHeight;
-      swCanvas.className = 'block w-full h-full cursor-crosshair select-none';
-      container.innerHTML = '';
-      container.appendChild(swCanvas);
-      fallbackCanvas = swCanvas;
-      fallbackCtx2D = swCanvas.getContext('2d');
-    }
-
-    const renderer = {
-      domElement: webglRenderer ? webglRenderer.domElement : fallbackCanvas,
-      setSize: (w: number, h: number) => {
-        if (webglRenderer) {
-          webglRenderer.setSize(w, h);
-        } else {
-          fallbackCanvas.width = w;
-          fallbackCanvas.height = h;
-        }
-      },
-      setViewport: (x: number, y: number, w: number, h: number) => {
-        if (webglRenderer) {
-          webglRenderer.setViewport(x, y, w, h);
-        }
-      },
-      render: (sc: THREE.Scene, cm: THREE.Camera) => {
-        if (webglRenderer) {
-          webglRenderer.render(sc, cm);
-        }
-      },
-      dispose: () => {
-        if (webglRenderer) {
-          webglRenderer.dispose();
-        }
-      },
-    };
+    renderer.domElement.id = 'c';
+    renderer.domElement.className = 'block w-full h-full cursor-crosshair select-none';
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.08;
+    renderer.shadowMap.enabled = !isSoftwareGl;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
+    container.innerHTML = '';
+    container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
+    const skyBgColor = new THREE.Color(0x87ceeb);
+    scene.background = skyBgColor;
     const sceneFog = new THREE.FogExp2(0x87ceeb, 0.011);
     scene.fog = sceneFog;
 
     const cam1 = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 145);
 
-    // Requisito 3: Filtro de 'bloom' suave usando THREE.EffectComposer y UnrealBloomPass (cuando WebGL está activo)
+    // Filtro de 'bloom' suave usando THREE.EffectComposer y UnrealBloomPass (en GPU)
     let composer: EffectComposer | null = null;
-    if (webglRenderer) {
+    if (!isSoftwareGl) {
       try {
-        composer = new EffectComposer(webglRenderer);
+        composer = new EffectComposer(renderer);
         const renderPass = new RenderPass(scene, cam1);
         composer.addPass(renderPass);
         const bloomPass = new UnrealBloomPass(
@@ -697,7 +642,19 @@ export function App() {
     scene.add(hemiL);
     const sunL = new THREE.DirectionalLight(0xfff5e0, 1.15);
     sunL.position.set(60, 100, 40);
+    sunL.castShadow = !isSoftwareGl;
+    sunL.shadow.mapSize.width = 1024;
+    sunL.shadow.mapSize.height = 1024;
+    sunL.shadow.camera.near = 0.5;
+    sunL.shadow.camera.far = 220;
+    sunL.shadow.camera.left = -48;
+    sunL.shadow.camera.right = 48;
+    sunL.shadow.camera.top = 48;
+    sunL.shadow.camera.bottom = -48;
+    sunL.shadow.bias = -0.0005;
+    sunL.shadow.normalBias = 0.02;
     scene.add(sunL);
+    scene.add(sunL.target);
 
     const skyGeo = new THREE.SphereGeometry(135, 16, 12);
     const skyMat = new THREE.MeshBasicMaterial({ color: 0x87ceeb, side: THREE.BackSide });
@@ -960,6 +917,7 @@ export function App() {
       }
 
       const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
       tex.magFilter = THREE.NearestFilter;
       tex.minFilter = THREE.NearestFilter;
       tex.generateMipmaps = false;
@@ -983,7 +941,10 @@ export function App() {
       const isWater = id === BT.WATER || id === BT.PUDDLE;
 
       const matParams: THREE.MeshStandardMaterialParameters = {
+        color: 0xffffff,
         map: tex,
+        bumpMap: tex,
+        bumpScale: isWater ? 0.005 : isRocky ? 0.045 : 0.025,
         roughness: isWater ? 0.15 : isShiny ? 0.25 : isWoody ? 0.72 : isRocky ? 0.88 : 0.8,
         metalness: isShiny ? 0.35 : isWater ? 0.15 : 0.02,
       };
@@ -1020,14 +981,6 @@ export function App() {
     ensureChunksAroundPlayer(world, PL1.pos.x, PL1.pos.z, VIEW_CHUNK_RADIUS);
 
     const bGeo = new THREE.BoxGeometry(1, 1, 1);
-    const openDoorGeo = new THREE.BoxGeometry(0.18, 1, 0.96);
-    openDoorGeo.translate(-0.41, 0, 0);
-    const torchGeo = new THREE.BoxGeometry(0.2, 0.72, 0.2);
-    torchGeo.translate(0, -0.14, 0);
-    const puddleGeo = new THREE.BoxGeometry(0.92, 0.06, 0.92);
-    puddleGeo.translate(0, -0.47, 0);
-    const chairGeo = new THREE.BoxGeometry(0.76, 0.65, 0.76);
-    chairGeo.translate(0, -0.17, 0);
 
     const iMeshes: Record<number, THREE.InstancedMesh> = {};
     const torchLights: THREE.PointLight[] = [];
@@ -1091,25 +1044,31 @@ export function App() {
       for (const [k, c] of Object.entries(cnt)) {
         const b = Number(k);
         if (!c || !BMAT[b]) continue;
-        const geoToUse =
-          b === BT.DOOR_OPEN
-            ? openDoorGeo
-            : b === BT.TORCH
-              ? torchGeo
-              : b === BT.PUDDLE
-                ? puddleGeo
-                : b === BT.CHAIR
-                  ? chairGeo
-                  : bGeo;
-        const im = new THREE.InstancedMesh(geoToUse, BMAT[b], c);
+        const im = new THREE.InstancedMesh(bGeo, BMAT[b], c);
+        im.castShadow = b !== BT.WATER && b !== BT.PUDDLE;
+        im.receiveShadow = true;
         const p = pos[b];
         for (let i = 0; i < c; i++) {
           const bx = p[i * 3] + 0.5;
           const by = p[i * 3 + 1] + 0.5;
           const bz = p[i * 3 + 2] + 0.5;
-          dummy.position.set(bx, by, bz);
+          if (b === BT.DOOR_OPEN) {
+            dummy.position.set(bx - 0.41, by, bz);
+            dummy.scale.set(0.18, 1, 0.96);
+          } else if (b === BT.TORCH) {
+            dummy.position.set(bx, by - 0.14, bz);
+            dummy.scale.set(0.2, 0.72, 0.2);
+          } else if (b === BT.PUDDLE) {
+            dummy.position.set(bx, by - 0.47, bz);
+            dummy.scale.set(0.92, 0.06, 0.92);
+          } else if (b === BT.CHAIR) {
+            dummy.position.set(bx, by - 0.17, bz);
+            dummy.scale.set(0.76, 0.65, 0.76);
+          } else {
+            dummy.position.set(bx, by, bz);
+            dummy.scale.set(1, 1, 1);
+          }
           dummy.rotation.set(0, 0, 0);
-          dummy.scale.set(1, 1, 1);
           dummy.updateMatrix();
           im.setMatrixAt(i, dummy.matrix);
 
@@ -1641,6 +1600,8 @@ export function App() {
         new THREE.MeshStandardMaterial({ color: c, roughness: 0.72 })
       );
       m.position.set(ox, oy, oz);
+      m.castShadow = true;
+      m.receiveShadow = true;
       return m;
     }
 
@@ -3199,6 +3160,8 @@ export function App() {
       skyMesh.position.set(PL1.pos.x, 0, PL1.pos.z);
       stars.position.set(PL1.pos.x, 0, PL1.pos.z);
       sunL.position.copy(sunMesh.position);
+      sunL.target.position.set(PL1.pos.x, PL1.pos.y, PL1.pos.z);
+      sunL.target.updateMatrixWorld();
 
       if (isHostRef.current) {
         weatherCycleT -= dt;
@@ -3237,6 +3200,7 @@ export function App() {
         sceneFog.density = 0.011;
       }
 
+      skyBgColor.copy(skyCol);
       skyMat.color.copy(skyCol);
       sceneFog.color.copy(skyCol);
       const stormDim = curWeather === 'clear' ? 1.0 : 0.68;
@@ -3537,9 +3501,34 @@ export function App() {
 
     let panoramaAngle = 0.6;
     let buildTimerSecAccum = 0;
+    let disposed = false;
+    let timerId = 0;
+    let renderedFrames = 0;
+
+    function afterDraw(cb: () => void) {
+      if (disposed) return;
+      const gl = renderer.getContext() as WebGL2RenderingContext;
+      if (typeof gl.fenceSync === 'function') {
+        const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        gl.flush();
+        const poll = () => {
+          if (disposed) return;
+          const state = sync && gl.getSyncParameter(sync, gl.SYNC_STATUS);
+          if (state === gl.UNSIGNALED) {
+            timerId = window.setTimeout(poll, 5);
+          } else {
+            if (sync) gl.deleteSync(sync);
+            timerId = window.setTimeout(cb, 80);
+          }
+        };
+        timerId = window.setTimeout(poll, 5);
+      } else {
+        timerId = window.setTimeout(cb, 80);
+      }
+    }
 
     function loop() {
-      animFrameId = requestAnimationFrame(loop);
+      if (disposed) return;
       const now = performance.now();
       const dt = Math.min((now - lastT) / 1000, 0.05);
       lastT = now;
@@ -3601,7 +3590,7 @@ export function App() {
       }
 
       const activeControls =
-        (pointerLocked || touchDetected) &&
+        (pointerLocked || touchDetected || isPlayingRef.current) &&
         !wolfModalOpenLocal &&
         !inventoryOpenLocal &&
         !quickCraftOpenLocal &&
@@ -3747,6 +3736,7 @@ export function App() {
         cam1.rotation.order = 'YXZ';
         cam1.rotation.y = camAnglesRef.current.yaw;
         cam1.rotation.x = camAnglesRef.current.pitch;
+        cam1.rotation.z = 0;
         cam1.updateMatrixWorld();
       }
 
@@ -3848,100 +3838,22 @@ export function App() {
       renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
       if (composer) {
         composer.render();
-      } else if (webglRenderer) {
-        webglRenderer.render(scene, cam1);
-      } else if (fallbackCtx2D) {
-        // Renderizador 3D proyectado en Canvas 2D con efecto Bloom suave cuando WebGL está deshabilitado en el entorno
-        const w = fallbackCanvas.width;
-        const h = fallbackCanvas.height;
-        const ctx = fallbackCtx2D;
-        cam1.updateProjectionMatrix();
-        const skyHex = `#${skyMat.color.getHexString()}`;
-        const grad = ctx.createLinearGradient(0, 0, 0, h);
-        grad.addColorStop(0, skyHex);
-        grad.addColorStop(1, '#0f172a');
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, w, h);
+      } else {
+        renderer.render(scene, cam1);
+      }
+      renderedFrames++;
+      if (container) container.dataset.frames = String(renderedFrames);
 
-        // Sol / Luna con halo de Bloom envolvente
-        const sunProj = sunMesh.position.clone().project(cam1);
-        if (sunProj.z < 1) {
-          const sx = (sunProj.x * 0.5 + 0.5) * w;
-          const sy = (-sunProj.y * 0.5 + 0.5) * h;
-          const sunGlow = ctx.createRadialGradient(sx, sy, 6, sx, sy, 68);
-          sunGlow.addColorStop(0, 'rgba(255, 240, 130, 0.95)');
-          sunGlow.addColorStop(0.4, 'rgba(251, 191, 36, 0.35)');
-          sunGlow.addColorStop(1, 'rgba(251, 191, 36, 0)');
-          ctx.fillStyle = sunGlow;
-          ctx.beginPath();
-          ctx.arc(sx, sy, 68, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        // Proyección 3D de bloques cercanos alrededor de la cámara
-        const drawList: Array<{
-          distSq: number;
-          sx: number;
-          sy: number;
-          size: number;
-          col: number;
-          isTorch: boolean;
-        }> = [];
-        const cx = Math.floor(PL1.pos.x);
-        const cz = Math.floor(PL1.pos.z);
-        const pVec = new THREE.Vector3();
-        for (let dx = -12; dx <= 12; dx++) {
-          for (let dz = -12; dz <= 12; dz++) {
-            const wx = cx + dx;
-            const wz = cz + dz;
-            const topY = Math.max(1, surfY(world, wx, wz) - 1);
-            for (let wy = Math.max(1, topY - 2); wy <= Math.min(WH - 2, topY + 4); wy++) {
-              const b = gB(world, wx, wy, wz);
-              if (b === BT.AIR || !vis(wx, wy, wz)) continue;
-              pVec.set(wx + 0.5, wy + 0.5, wz + 0.5);
-              const distSq = pVec.distanceToSquared(cam1.position);
-              if (distSq > 260 || distSq < 0.2) continue;
-              pVec.project(cam1);
-              if (pVec.z >= 1 || pVec.z < -1) continue;
-              const sx = (pVec.x * 0.5 + 0.5) * w;
-              const sy = (-pVec.y * 0.5 + 0.5) * h;
-              if (sx < -80 || sx > w + 80 || sy < -80 || sy > h + 80) continue;
-              const size = Math.max(6, Math.min(95, (w * 0.62) / Math.sqrt(distSq)));
-              drawList.push({
-                distSq,
-                sx,
-                sy,
-                size,
-                col: BD[b]?.c ?? 0x5dbb40,
-                isTorch: b === BT.TORCH,
-              });
-            }
-          }
-        }
-        drawList.sort((a, b) => b.distSq - a.distSq);
-        for (const item of drawList) {
-          const r = (item.col >> 16) & 255;
-          const g = (item.col >> 8) & 255;
-          const bl = item.col & 255;
-          const hs = item.size * 0.5;
-          ctx.fillStyle = `rgb(${r},${g},${bl})`;
-          ctx.fillRect(item.sx - hs, item.sy - hs, item.size, item.size);
-          ctx.strokeStyle = 'rgba(0,0,0,0.28)';
-          ctx.strokeRect(item.sx - hs, item.sy - hs, item.size, item.size);
-          if (item.isTorch) {
-            const tg = ctx.createRadialGradient(item.sx, item.sy, 2, item.sx, item.sy, item.size * 1.8);
-            tg.addColorStop(0, 'rgba(255, 200, 60, 0.85)');
-            tg.addColorStop(1, 'rgba(255, 140, 0, 0)');
-            ctx.fillStyle = tg;
-            ctx.beginPath();
-            ctx.arc(item.sx, item.sy, item.size * 1.8, 0, Math.PI * 2);
-            ctx.fill();
-          }
-        }
+      if (isSoftwareGl) {
+        afterDraw(() => {
+          if (!disposed) animFrameId = requestAnimationFrame(loop);
+        });
+      } else {
+        animFrameId = requestAnimationFrame(loop);
       }
     }
 
-    loop();
+    animFrameId = requestAnimationFrame(loop);
 
     const onResize = () => {
       renderer.setSize(window.innerWidth, window.innerHeight);
@@ -3952,7 +3864,9 @@ export function App() {
     window.addEventListener('resize', onResize);
 
     return () => {
+      disposed = true;
       cancelAnimationFrame(animFrameId);
+      clearTimeout(timerId);
       clearTimeout(redLightRespawnTimeout);
       if (peerInstance) peerInstance.destroy();
       window.removeEventListener('keydown', onKeyDown);
@@ -3970,13 +3884,18 @@ export function App() {
   }, []);
 
   const handleStartSingleOrResume = () => {
-    const canvas = mountRef.current?.querySelector('canvas');
-    if (canvas && canvas.requestPointerLock && !isTouchDevice) {
-      canvas.requestPointerLock();
-    }
     isPlayingRef.current = true;
     setIsPlaying(true);
     setHasStartedOnce(true);
+    try {
+      const canvas = mountRef.current?.querySelector('canvas');
+      if (canvas && canvas.requestPointerLock && !isTouchDevice) {
+        const res = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+        res?.catch?.(() => {});
+      }
+    } catch {
+      // Ignorar si el iframe bloquea PointerLock en el primer clic
+    }
   };
 
   const handlePlaySingleplayerSurvival = () => {
@@ -4138,7 +4057,7 @@ export function App() {
                 }}
                 className="
                   absolute px-3.5 py-1.5 rounded-2xl
-                  bg-slate-950/85 backdrop-blur-md
+                  bg-slate-950/85
                   border border-cyan-400/50
                   shadow-[0_0_20px_rgba(34,211,238,0.35)]
                   text-xs font-medium text-white whitespace-nowrap
@@ -4159,7 +4078,7 @@ export function App() {
         >
           <div
             className={`
-              px-8 py-3 rounded-3xl border-2 backdrop-blur-xl font-black tracking-wider uppercase
+              px-8 py-3 rounded-3xl border-2 font-black tracking-wider uppercase
               text-2xl sm:text-4xl shadow-2xl transition-all duration-150
               ${
                 challengeState === 'green'
@@ -4179,7 +4098,7 @@ export function App() {
       {movedDeathBanner && (
         <div
           id="movedAlertBanner"
-          className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-rose-950/50 backdrop-blur-sm"
+          className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-rose-950/50"
         >
           <div className="px-10 py-6 rounded-3xl bg-slate-950/95 border-4 border-rose-500 shadow-[0_0_80px_rgba(244,63,94,0.95)] text-center">
             <div className="text-4xl sm:text-6xl font-black tracking-widest text-rose-400 drop-shadow-[0_0_20px_rgba(244,63,94,0.9)]">
@@ -4310,7 +4229,7 @@ export function App() {
             id="hudEssentialLeft"
             className="
               inf flex flex-col gap-1 px-3 py-2 rounded-2xl
-              bg-[rgba(10,10,15,0.62)] backdrop-blur-md
+              bg-[rgba(10,10,15,0.62)]
               border border-emerald-400/25
               text-xs text-slate-200
             "
@@ -4376,7 +4295,7 @@ export function App() {
             style={{ display: isTabHeld ? 'flex' : 'none' }}
             className="
               items-center gap-2.5 px-3 py-2 rounded-2xl
-              bg-[rgba(10,12,18,0.82)] backdrop-blur-md
+              bg-[rgba(10,12,18,0.82)]
               border border-amber-400/40
               shadow-[0_0_20px_rgba(251,191,36,0.2)]
               text-xs text-slate-100
@@ -4417,7 +4336,7 @@ export function App() {
             style={{ display: isTabHeld ? 'flex' : 'none' }}
             className="
               inf flex-col gap-1 px-3.5 py-2 rounded-2xl
-              bg-[rgba(10,12,18,0.82)] backdrop-blur-md
+              bg-[rgba(10,12,18,0.82)]
               border border-cyan-400/35
               shadow-[0_0_20px_rgba(34,211,238,0.18)]
               text-xs text-slate-200
@@ -4458,7 +4377,7 @@ export function App() {
           id="hudWeatherPanel"
           className="
             inf pointer-events-auto flex items-center gap-2 px-3.5 py-2 rounded-2xl
-            bg-[rgba(10,10,15,0.62)] backdrop-blur-md
+            bg-[rgba(10,10,15,0.62)]
             border border-cyan-400/30
             text-xs text-slate-200
           "
@@ -4510,7 +4429,7 @@ export function App() {
         className="
           pointer-events-none fixed top-36 left-1/2 -translate-x-1/2 z-20
           px-5 py-2 rounded-xl
-          bg-[rgba(10,10,15,0.85)] backdrop-blur-md
+          bg-[rgba(10,10,15,0.85)]
           border border-emerald-400/40
           text-sm font-bold text-emerald-300
           shadow-[0_0_24px_rgba(16,185,129,0.3)]
@@ -4529,7 +4448,7 @@ export function App() {
             }}
             className="
               w-full max-w-lg flex items-center gap-2 p-2.5 rounded-2xl
-              bg-slate-950/90 backdrop-blur-xl border border-cyan-400/50
+              bg-slate-950/90 border border-cyan-400/50
               shadow-[0_12px_40px_rgba(0,0,0,0.75),0_0_25px_rgba(34,211,238,0.25)]
             "
           >
@@ -4576,7 +4495,7 @@ export function App() {
             onTouchEnd={onJoystickTouchEnd}
             className="
               fixed bottom-24 left-6 z-25 w-28 h-28 rounded-full
-              bg-slate-950/60 backdrop-blur-md border-2 border-cyan-400/40
+              bg-slate-950/60 border-2 border-cyan-400/40
               shadow-[0_0_24px_rgba(34,211,238,0.25)]
               flex items-center justify-center touch-none
             "
@@ -4651,7 +4570,7 @@ export function App() {
           id="activeBlockLabel"
           className="
             px-3.5 py-1 rounded-full
-            bg-[rgba(10,10,15,0.75)] backdrop-blur-md
+            bg-[rgba(10,10,15,0.75)]
             border border-white/10
             text-[11px] font-medium text-cyan-200 tracking-wide
           "
@@ -4662,7 +4581,7 @@ export function App() {
           id="hb1"
           className="
             hb flex items-center gap-1.5 p-2 rounded-2xl
-            bg-[rgba(10,10,15,0.65)] backdrop-blur-md
+            bg-[rgba(10,10,15,0.65)]
             border border-emerald-400/25
             shadow-[0_12px_36px_rgba(0,0,0,0.55),0_0_20px_rgba(16,185,129,0.15)]
           "
@@ -4673,12 +4592,12 @@ export function App() {
       {isQuickCraftOpen && pl && (
         <div
           id="quickCraftModal"
-          className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/75 backdrop-blur-md p-4"
+          className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/75 p-4"
         >
           <div
             className="
               w-full max-w-md p-6 rounded-3xl
-              bg-[rgba(10,12,20,0.92)] backdrop-blur-xl
+              bg-[rgba(10,12,20,0.92)]
               border border-emerald-400/45
               shadow-[0_24px_64px_rgba(0,0,0,0.85),0_0_36px_rgba(16,185,129,0.22)]
               text-white
@@ -4772,12 +4691,12 @@ export function App() {
       {isCraftingTableOpen && pl && (
         <div
           id="craftingTableModal"
-          className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/75 backdrop-blur-md p-4"
+          className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/75 p-4"
         >
           <div
             className="
               w-full max-w-3xl p-6 rounded-3xl
-              bg-[rgba(12,14,22,0.92)] backdrop-blur-xl
+              bg-[rgba(12,14,22,0.92)]
               border border-amber-400/45
               shadow-[0_24px_64px_rgba(0,0,0,0.85),0_0_40px_rgba(245,158,11,0.22)]
               text-white max-h-[90vh] overflow-y-auto
@@ -4999,12 +4918,12 @@ export function App() {
       {isInventoryOpen && pl && (
         <div
           id="inventoryModal"
-          className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/70 backdrop-blur-md p-4"
+          className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/70 p-4"
         >
           <div
             className="
               w-full max-w-xl p-6 rounded-3xl
-              bg-[rgba(12,14,22,0.9)] backdrop-blur-xl
+              bg-[rgba(12,14,22,0.9)]
               border border-emerald-400/35
               shadow-[0_24px_64px_rgba(0,0,0,0.85)]
               text-white
@@ -5126,11 +5045,11 @@ export function App() {
 
       {/* Wolf Naming Modal */}
       {wolfModal.open && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/70 backdrop-blur-md">
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/70">
           <div
             className="
               w-full max-w-sm p-6 rounded-3xl
-              bg-[rgba(12,14,22,0.9)] backdrop-blur-xl
+              bg-[rgba(12,14,22,0.9)]
               border border-amber-400/40
               shadow-[0_20px_50px_rgba(0,0,0,0.8)]
               text-center text-white
@@ -5183,7 +5102,7 @@ export function App() {
         !isChatOpen && (
           <div
             id="ov"
-            className="fixed inset-0 z-30 flex flex-col items-center justify-between py-12 px-4 bg-black/35 backdrop-blur-[2px]"
+            className="fixed inset-0 z-30 flex flex-col items-center justify-between py-12 px-4 bg-black/35"
           >
             {/* Título Gigante de "VoxelWorld" arriba al centro estilo Minecraft */}
             <div className="flex flex-col items-center mt-2 select-none">
