@@ -1,9 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { Peer, DataConnection } from 'peerjs';
+import { renderTrue3DScene } from './game/software3DRenderer';
 import {
   BT,
   BD,
@@ -317,7 +316,10 @@ export function App() {
     }
   });
 
+  const [fatalEngineError, setFatalEngineError] = useState<string | null>(null);
+
   const actionsRef = useRef<{
+    unlockAudio: () => void;
     confirmWolfName: (name: string) => void;
     cancelWolfName: () => void;
     craftPlanks: () => void;
@@ -443,6 +445,7 @@ export function App() {
   }, []);
 
   const handleInstallPWAClick = async () => {
+    actionsRef.current?.unlockAudio();
     if (deferredInstallPromptRef.current) {
       try {
         deferredInstallPromptRef.current.prompt();
@@ -461,180 +464,257 @@ export function App() {
   };
 
   useEffect(() => {
-    const container = mountRef.current;
-    if (!container) return;
+    let cleanupEngine: (() => void) | null = null;
+    let loadHandler: (() => void) | null = null;
 
-    const touchDetected =
-      'ontouchstart' in window ||
-      navigator.maxTouchPoints > 0 ||
-      window.matchMedia('(pointer: coarse)').matches;
-    setIsTouchDevice(touchDetected);
-
-    // ─── WEB AUDIO SYNTHESIZER ────────────────────────────────────────
-    let audioCtx: AudioContext | null = null;
-    const ensureAudio = () => {
-      if (!audioCtx) {
-        const Ctx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-        if (Ctx) audioCtx = new Ctx();
-      }
-      if (audioCtx && audioCtx.state === 'suspended') {
-        audioCtx.resume().catch(() => {});
-      }
-    };
-
-    const playSfx = (
-      kind:
-        | 'step'
-        | 'jump'
-        | 'land'
-        | 'break'
-        | 'place'
-        | 'hit'
-        | 'hurt'
-        | 'tame'
-        | 'craft'
-        | 'door'
-        | 'horse'
-        | 'redlight'
-        | 'greenlight'
-    ) => {
-      if (!audioCtx) return;
+    // REQUISITO 3: Función de captura de errores visibles (inyecta un div con z-index alto e imprime error.message)
+    const reportFatalEngineError = (error: unknown) => {
+      const errMessage =
+        error instanceof Error ? error.message || String(error) : String(error);
+      setFatalEngineError(errMessage);
       try {
-        const now = audioCtx.currentTime;
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-
-        if (kind === 'step') {
-          osc.type = 'triangle';
-          osc.frequency.setValueAtTime(95 + Math.random() * 25, now);
-          osc.frequency.exponentialRampToValueAtTime(45, now + 0.055);
-          gain.gain.setValueAtTime(0.05, now);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
-          osc.start(now);
-          osc.stop(now + 0.06);
-        } else if (kind === 'jump') {
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(190, now);
-          osc.frequency.exponentialRampToValueAtTime(390, now + 0.12);
-          gain.gain.setValueAtTime(0.09, now);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
-          osc.start(now);
-          osc.stop(now + 0.13);
-        } else if (kind === 'land') {
-          osc.type = 'triangle';
-          osc.frequency.setValueAtTime(120, now);
-          osc.frequency.exponentialRampToValueAtTime(42, now + 0.08);
-          gain.gain.setValueAtTime(0.08, now);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
-          osc.start(now);
-          osc.stop(now + 0.09);
-        } else if (kind === 'break') {
-          osc.type = 'sawtooth';
-          osc.frequency.setValueAtTime(220, now);
-          osc.frequency.exponentialRampToValueAtTime(68, now + 0.11);
-          gain.gain.setValueAtTime(0.11, now);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
-          osc.start(now);
-          osc.stop(now + 0.12);
-        } else if (kind === 'place' || kind === 'door') {
-          osc.type = 'square';
-          osc.frequency.setValueAtTime(kind === 'door' ? 210 : 280, now);
-          osc.frequency.exponentialRampToValueAtTime(420, now + 0.07);
-          gain.gain.setValueAtTime(0.08, now);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
-          osc.start(now);
-          osc.stop(now + 0.08);
-        } else if (kind === 'hit') {
-          osc.type = 'sawtooth';
-          osc.frequency.setValueAtTime(160, now);
-          osc.frequency.exponentialRampToValueAtTime(55, now + 0.14);
-          gain.gain.setValueAtTime(0.14, now);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-          osc.start(now);
-          osc.stop(now + 0.15);
-        } else if (kind === 'hurt' || kind === 'redlight') {
-          osc.type = 'sawtooth';
-          osc.frequency.setValueAtTime(135, now);
-          osc.frequency.linearRampToValueAtTime(60, now + 0.22);
-          gain.gain.setValueAtTime(0.16, now);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
-          osc.start(now);
-          osc.stop(now + 0.24);
-        } else if (kind === 'tame' || kind === 'craft' || kind === 'horse' || kind === 'greenlight') {
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(360, now);
-          osc.frequency.setValueAtTime(540, now + 0.07);
-          osc.frequency.setValueAtTime(720, now + 0.14);
-          gain.gain.setValueAtTime(0.12, now);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
-          osc.start(now);
-          osc.stop(now + 0.28);
+        let errDiv = document.getElementById('vercel-fatal-error-banner');
+        if (!errDiv && document.body) {
+          errDiv = document.createElement('div');
+          errDiv.id = 'vercel-fatal-error-banner';
+          errDiv.style.cssText =
+            'position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:999999;max-width:92vw;width:680px;background:rgba(15,23,42,0.97);border:2px solid #f43f5e;color:#ffe4e6;padding:16px 20px;border-radius:14px;font-family:monospace;box-shadow:0 0 40px rgba(244,63,94,0.65);';
+          document.body.appendChild(errDiv);
+        }
+        if (errDiv) {
+          errDiv.innerHTML = `<div style="font-weight:800;color:#fb7185;margin-bottom:6px;font-size:14px;">⚠️ Error detectado en motor 3D:</div><div style="font-size:13px;word-break:break-word;">${errMessage}</div>`;
         }
       } catch {
-        // Ignore audio context restrictions
+        // Ignorar si el DOM aún no admite inyección
       }
     };
 
-    // ─── RENDERER 3D DIRECTO CON OPCIONES DE MÁXIMA COMPATIBILIDAD ───
-    const renderer = new THREE.WebGLRenderer({
-      antialias: false,
-      alpha: false,
-      powerPreference: 'high-performance',
-    });
-
-    let isSoftwareGl = false;
-    try {
-      const gl = renderer.getContext();
-      const dbgExt = gl.getExtension('WEBGL_debug_renderer_info');
-      const param = dbgExt ? dbgExt.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
-      const gpuStr = String(gl.getParameter(param) || '');
-      isSoftwareGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpuStr);
-    } catch {
-      isSoftwareGl = false;
-    }
-
-    renderer.domElement.id = 'c';
-    renderer.domElement.className = 'block w-full h-full cursor-crosshair select-none';
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.08;
-    renderer.shadowMap.enabled = !isSoftwareGl;
-    renderer.shadowMap.type = THREE.PCFShadowMap;
-    container.innerHTML = '';
-    container.appendChild(renderer.domElement);
-
-    const scene = new THREE.Scene();
-    const skyBgColor = new THREE.Color(0x87ceeb);
-    scene.background = skyBgColor;
-    const sceneFog = new THREE.FogExp2(0x87ceeb, 0.011);
-    scene.fog = sceneFog;
-
-    const cam1 = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 145);
-
-    // Filtro de 'bloom' suave usando THREE.EffectComposer y UnrealBloomPass (en GPU)
-    let composer: EffectComposer | null = null;
-    if (!isSoftwareGl) {
+    const startEngineWhenDomReady = () => {
       try {
-        composer = new EffectComposer(renderer);
-        const renderPass = new RenderPass(scene, cam1);
-        composer.addPass(renderPass);
-        const bloomPass = new UnrealBloomPass(
-          new THREE.Vector2(window.innerWidth, window.innerHeight),
-          0.38,
-          0.55,
-          0.78
-        );
-        composer.addPass(bloomPass);
-      } catch {
-        composer = null;
-      }
-    }
+        const container = mountRef.current || document.getElementById('root') || document.body;
+        if (!container) return;
+
+        const touchDetected =
+          'ontouchstart' in window ||
+          navigator.maxTouchPoints > 0 ||
+          window.matchMedia('(pointer: coarse)').matches;
+        setIsTouchDevice(touchDetected);
+
+        // ─── REQUISITO 2: POLÍTICA DE AUTOPLAY DE AUDIO (WEBAUDIO API) ─────
+        // AudioContext SOLO se crea o se reanuda (resume()) DESPUÉS de que el jugador
+        // haga clic en algún botón del menú principal (ej. "Un Jugador" o "Multijugador").
+        let audioCtx: AudioContext | null = null;
+        let audioUnlockedByMenuClick = false;
+
+        const unlockAudioFromMenu = () => {
+          audioUnlockedByMenuClick = true;
+          try {
+            if (!audioCtx) {
+              const Ctx =
+                window.AudioContext ||
+                (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+              if (Ctx) audioCtx = new Ctx();
+            }
+            if (audioCtx && audioCtx.state === 'suspended') {
+              audioCtx.resume().catch(() => {});
+            }
+          } catch {
+            // Ignorar restricciones de reproducción automática del navegador
+          }
+        };
+
+        const ensureAudio = () => {
+          if (!audioUnlockedByMenuClick) return;
+          unlockAudioFromMenu();
+        };
+
+        const playSfx = (
+          kind:
+            | 'step'
+            | 'jump'
+            | 'land'
+            | 'break'
+            | 'place'
+            | 'hit'
+            | 'hurt'
+            | 'tame'
+            | 'craft'
+            | 'door'
+            | 'horse'
+            | 'redlight'
+            | 'greenlight'
+        ) => {
+          // Bloquear estrictamente cualquier sonido antes de hacer clic en el menú principal
+          if (!audioUnlockedByMenuClick || !audioCtx) return;
+          try {
+            if (audioCtx.state === 'suspended') {
+              audioCtx.resume().catch(() => {});
+              return;
+            }
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            if (kind === 'step') {
+              osc.type = 'triangle';
+              osc.frequency.setValueAtTime(95 + Math.random() * 25, now);
+              osc.frequency.exponentialRampToValueAtTime(45, now + 0.055);
+              gain.gain.setValueAtTime(0.05, now);
+              gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+              osc.start(now);
+              osc.stop(now + 0.06);
+            } else if (kind === 'jump') {
+              osc.type = 'sine';
+              osc.frequency.setValueAtTime(190, now);
+              osc.frequency.exponentialRampToValueAtTime(390, now + 0.12);
+              gain.gain.setValueAtTime(0.09, now);
+              gain.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
+              osc.start(now);
+              osc.stop(now + 0.13);
+            } else if (kind === 'land') {
+              osc.type = 'triangle';
+              osc.frequency.setValueAtTime(120, now);
+              osc.frequency.exponentialRampToValueAtTime(42, now + 0.08);
+              gain.gain.setValueAtTime(0.08, now);
+              gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+              osc.start(now);
+              osc.stop(now + 0.09);
+            } else if (kind === 'break') {
+              osc.type = 'sawtooth';
+              osc.frequency.setValueAtTime(220, now);
+              osc.frequency.exponentialRampToValueAtTime(68, now + 0.11);
+              gain.gain.setValueAtTime(0.11, now);
+              gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+              osc.start(now);
+              osc.stop(now + 0.12);
+            } else if (kind === 'place' || kind === 'door') {
+              osc.type = 'square';
+              osc.frequency.setValueAtTime(kind === 'door' ? 210 : 280, now);
+              osc.frequency.exponentialRampToValueAtTime(420, now + 0.07);
+              gain.gain.setValueAtTime(0.08, now);
+              gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+              osc.start(now);
+              osc.stop(now + 0.08);
+            } else if (kind === 'hit') {
+              osc.type = 'sawtooth';
+              osc.frequency.setValueAtTime(160, now);
+              osc.frequency.exponentialRampToValueAtTime(55, now + 0.14);
+              gain.gain.setValueAtTime(0.14, now);
+              gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+              osc.start(now);
+              osc.stop(now + 0.15);
+            } else if (kind === 'hurt' || kind === 'redlight') {
+              osc.type = 'sawtooth';
+              osc.frequency.setValueAtTime(135, now);
+              osc.frequency.linearRampToValueAtTime(60, now + 0.22);
+              gain.gain.setValueAtTime(0.16, now);
+              gain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+              osc.start(now);
+              osc.stop(now + 0.24);
+            } else if (kind === 'tame' || kind === 'craft' || kind === 'horse' || kind === 'greenlight') {
+              osc.type = 'sine';
+              osc.frequency.setValueAtTime(360, now);
+              osc.frequency.setValueAtTime(540, now + 0.07);
+              osc.frequency.setValueAtTime(720, now + 0.14);
+              gain.gain.setValueAtTime(0.12, now);
+              gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+              osc.start(now);
+              osc.stop(now + 0.28);
+            }
+          } catch {
+            // Ignore audio context restrictions
+          }
+        };
+
+        // ─── RENDERER 3D ENVUELTO EN TRY-CATCH GLOBAL PARA VERCEL ───
+        const initW = Math.max(window.innerWidth || 1280, 320);
+        const initH = Math.max(window.innerHeight || 720, 240);
+        const mainCanvas = document.createElement('canvas');
+        const glAttrs: WebGLContextAttributes = {
+          antialias: false,
+          alpha: false,
+          depth: true,
+          stencil: true,
+          powerPreference: 'high-performance',
+          failIfMajorPerformanceCaveat: false,
+        };
+        const glContext = (mainCanvas.getContext('webgl2', glAttrs) ||
+          mainCanvas.getContext('webgl', glAttrs) ||
+          mainCanvas.getContext('experimental-webgl', glAttrs)) as WebGL2RenderingContext | null;
+
+        let webglRenderer: THREE.WebGLRenderer | null = null;
+        let isSoftwareGl = false;
+
+        if (glContext) {
+          webglRenderer = new THREE.WebGLRenderer({
+            canvas: mainCanvas,
+            context: glContext,
+            antialias: false,
+            alpha: false,
+            powerPreference: 'high-performance',
+          });
+          try {
+            const dbgExt = glContext.getExtension('WEBGL_debug_renderer_info');
+            const param = dbgExt ? dbgExt.UNMASKED_RENDERER_WEBGL : glContext.RENDERER;
+            const gpuStr = String(glContext.getParameter(param) || '');
+            isSoftwareGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpuStr);
+          } catch {
+            isSoftwareGl = false;
+          }
+          webglRenderer.outputColorSpace = THREE.SRGBColorSpace;
+          webglRenderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
+          webglRenderer.setSize(initW, initH);
+          webglRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+          webglRenderer.toneMappingExposure = 1.08;
+          webglRenderer.shadowMap.enabled = !isSoftwareGl;
+          webglRenderer.shadowMap.type = THREE.PCFShadowMap;
+        }
+
+        const activeCanvas = webglRenderer ? webglRenderer.domElement : document.createElement('canvas');
+        activeCanvas.id = 'c';
+        activeCanvas.className = 'block w-full h-full cursor-crosshair select-none';
+        if (!webglRenderer) {
+          activeCanvas.width = initW;
+          activeCanvas.height = initH;
+        }
+        const fallbackCtx3D = !webglRenderer ? activeCanvas.getContext('2d', { alpha: false }) : null;
+
+        const renderer = {
+          domElement: activeCanvas,
+          getContext: () => glContext as WebGL2RenderingContext,
+          setViewport: (x: number, y: number, w: number, h: number) => {
+            if (webglRenderer) webglRenderer.setViewport(x, y, w, h);
+          },
+          setSize: (w: number, h: number) => {
+            const safeW = Math.max(w || 1280, 320);
+            const safeH = Math.max(h || 720, 240);
+            if (webglRenderer) {
+              webglRenderer.setSize(safeW, safeH);
+            } else {
+              activeCanvas.width = safeW;
+              activeCanvas.height = safeH;
+            }
+          },
+          dispose: () => {
+            webglRenderer?.dispose();
+          },
+        };
+
+        container.innerHTML = '';
+        container.appendChild(renderer.domElement);
+
+        const scene = new THREE.Scene();
+        const skyBgColor = new THREE.Color(0x87ceeb);
+        scene.background = skyBgColor;
+        const sceneFog = new THREE.FogExp2(0x87ceeb, 0.011);
+        scene.fog = sceneFog;
+
+        const cam1 = new THREE.PerspectiveCamera(75, initW / initH, 0.1, 145);
+
+        // Renderizado directo al framebuffer de WebGLRenderer para máxima compatibilidad en GPUs de producción (Vercel)
+        const composer: EffectComposer | null = null;
 
     const ambL = new THREE.AmbientLight(0xffffff, 0.58);
     scene.add(ambL);
@@ -1527,23 +1607,28 @@ export function App() {
 
       try {
         if (peerInstance) peerInstance.destroy();
-        const peer = new Peer(`${PEER_PREFIX}${code}`);
+        // REQUISITO 1: Configuración Segura de PeerJS (HTTPS) en Vercel con { secure: true }
+        const peer = new Peer(`${PEER_PREFIX}${code}`, {
+          secure: true,
+        });
         peerInstance = peer;
 
         peer.on('open', (id) => {
           myPeerId = id;
           setMpStatus('hosting');
-          showMsg(`📡 Sala creada: Código ${code}`);
+          showMsg(`📡 Sala segura HTTPS creada: Código ${code}`);
         });
 
         peer.on('connection', (conn) => {
           registerConnection(conn);
         });
 
-        peer.on('error', () => {
+        peer.on('error', (err) => {
+          console.warn('PeerJS Host Error:', err);
           setMpStatus('hosting');
         });
-      } catch {
+      } catch (err) {
+        console.warn('PeerJS Host Init Catch:', err);
         setMpStatus('hosting');
       }
     }
@@ -1562,21 +1647,29 @@ export function App() {
 
       try {
         if (peerInstance) peerInstance.destroy();
-        const peer = new Peer();
+        // REQUISITO 1: Configuración Segura de PeerJS (HTTPS) en Vercel con { secure: true }
+        const peer = new Peer({
+          secure: true,
+        });
         peerInstance = peer;
 
         peer.on('open', (id) => {
           myPeerId = id;
           const conn = peer.connect(`${PEER_PREFIX}${clean}`, { reliable: true });
+          conn.on('error', (connErr) => {
+            console.warn('PeerJS DataConnection Error:', connErr);
+          });
           registerConnection(conn);
           setShowJoinModal(false);
         });
 
-        peer.on('error', () => {
+        peer.on('error', (err) => {
+          console.warn('PeerJS Client Error:', err);
           setMpError(`No se pudo conectar a la sala ${clean}. Verifica el código.`);
           setMpStatus('offline');
         });
-      } catch {
+      } catch (err) {
+        console.warn('PeerJS Client Init Catch:', err);
         setMpError('Error al inicializar PeerJS.');
         setMpStatus('offline');
       }
@@ -2756,6 +2849,9 @@ export function App() {
 
     // ─── ACCIONES EXPUESTAS A MODALES Y BOTONES DE REACT ──────────────
     actionsRef.current = {
+      unlockAudio: () => {
+        unlockAudioFromMenu();
+      },
       confirmWolfName: (name: string) => {
         ensureAudio();
         const target = entities.find((e) => e.id === wolfModal.wolfId);
@@ -3835,16 +3931,45 @@ export function App() {
         woolEl.textContent = `${countItemInInventory(PL1, BT.WOOL)}`;
       }
 
-      renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
-      if (composer) {
-        composer.render();
-      } else {
-        renderer.render(scene, cam1);
+      try {
+        if (webglRenderer) {
+          renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
+          if (composer) {
+            (composer as EffectComposer).render();
+          } else {
+            webglRenderer.render(scene, cam1);
+          }
+        } else if (fallbackCtx3D) {
+          const entityGroups: THREE.Object3D[] = [];
+          for (const ent of entities) {
+            if (ent.alive) entityGroups.push(ent.mesh);
+          }
+          for (const rp of remotePlayers.values()) {
+            entityGroups.push(rp.group);
+          }
+          renderTrue3DScene({
+            ctx: fallbackCtx3D,
+            width: activeCanvas.width,
+            height: activeCanvas.height,
+            camera: cam1,
+            world,
+            bmat: BMAT,
+            skyColor: skyMat.color,
+            sunPos: sunMesh.position,
+            moonPos: moonMesh.position,
+            dayTime,
+            selBox,
+            entityGroups,
+            torchLights,
+          });
+        }
+      } catch (renderErr) {
+        reportFatalEngineError(renderErr);
       }
       renderedFrames++;
       if (container) container.dataset.frames = String(renderedFrames);
 
-      if (isSoftwareGl) {
+      if (webglRenderer && isSoftwareGl) {
         afterDraw(() => {
           if (!disposed) animFrameId = requestAnimationFrame(loop);
         });
@@ -3856,14 +3981,16 @@ export function App() {
     animFrameId = requestAnimationFrame(loop);
 
     const onResize = () => {
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      composer?.setSize(window.innerWidth, window.innerHeight);
-      cam1.aspect = window.innerWidth / window.innerHeight;
+      const safeW = Math.max(window.innerWidth || 1280, 320);
+      const safeH = Math.max(window.innerHeight || 720, 240);
+      renderer.setSize(safeW, safeH);
+      if (composer) (composer as EffectComposer).setSize(safeW, safeH);
+      cam1.aspect = safeW / safeH;
       cam1.updateProjectionMatrix();
     };
     window.addEventListener('resize', onResize);
 
-    return () => {
+    cleanupEngine = () => {
       disposed = true;
       cancelAnimationFrame(animFrameId);
       clearTimeout(timerId);
@@ -3878,12 +4005,36 @@ export function App() {
       window.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('resize', onResize);
       renderer.domElement.removeEventListener('mousedown', onMouseDown);
-      composer?.dispose();
+      if (composer) (composer as EffectComposer).dispose();
       renderer.dispose();
+    };
+      } catch (initErr) {
+        reportFatalEngineError(initErr);
+      }
+    };
+
+    // REQUISITO 4: Esperar a que la ventana y el DOM estén completamente listos (window.onload / readyState === 'complete')
+    if (document.readyState === 'complete') {
+      startEngineWhenDomReady();
+    } else {
+      loadHandler = () => {
+        startEngineWhenDomReady();
+      };
+      window.addEventListener('load', loadHandler, { once: true });
+    }
+
+    return () => {
+      if (loadHandler) {
+        window.removeEventListener('load', loadHandler);
+      }
+      if (cleanupEngine) {
+        cleanupEngine();
+      }
     };
   }, []);
 
   const handleStartSingleOrResume = () => {
+    actionsRef.current?.unlockAudio();
     isPlayingRef.current = true;
     setIsPlaying(true);
     setHasStartedOnce(true);
@@ -3899,21 +4050,25 @@ export function App() {
   };
 
   const handlePlaySingleplayerSurvival = () => {
+    actionsRef.current?.unlockAudio();
     actionsRef.current?.selectGameMode('survival');
     handleStartSingleOrResume();
   };
 
   const handleCreateRoomClick = () => {
+    actionsRef.current?.unlockAudio();
     actionsRef.current?.createRoom();
   };
 
   const handleJoinRoomSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    actionsRef.current?.unlockAudio();
     actionsRef.current?.joinRoom(joinCodeInput);
     handleStartSingleOrResume();
   };
 
   const handleSelectModeAndStart = (mode: GameModeType, opp?: BuildBattleOpponent) => {
+    actionsRef.current?.unlockAudio();
     actionsRef.current?.selectGameMode(mode, opp);
     handleStartSingleOrResume();
   };
@@ -4022,6 +4177,19 @@ export function App() {
     <div className="relative w-screen h-screen overflow-hidden bg-slate-950 font-sans select-none">
       {/* Three.js Fullscreen Canvas Mount */}
       <div ref={mountRef} className="w-full h-full" />
+
+      {/* REQUISITO 3: Div con z-index alto para imprimir cualquier error fatal exacto (error.message) */}
+      {fatalEngineError && (
+        <div
+          id="fatalErrorOverlayReact"
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-[999999] max-w-[92vw] w-[680px] p-4 rounded-2xl bg-slate-950/95 border-2 border-rose-500 text-rose-100 font-mono shadow-2xl"
+        >
+          <div className="text-sm font-extrabold text-rose-400 mb-1">
+            ⚠️ Error detectado en motor 3D:
+          </div>
+          <div className="text-xs break-words">{fatalEngineError}</div>
+        </div>
+      )}
 
       {/* Zona táctil de cámara derecha para dispositivos móviles */}
       {isTouchDevice && isPlaying && (
@@ -5155,7 +5323,10 @@ export function App() {
                 <button
                   id="btnMultiplayerMenu"
                   type="button"
-                  onClick={() => setMenuView('mp_lobby')}
+                  onClick={() => {
+                    actionsRef.current?.unlockAudio();
+                    setMenuView('mp_lobby');
+                  }}
                   className="
                     w-full py-3.5 px-6
                     bg-[#4a4a4a] hover:bg-[#5e5e66] active:bg-[#383838]
