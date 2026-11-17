@@ -355,6 +355,8 @@ export function App() {
     toggleInventoryModal: () => void;
     toggleQuickCraftModal: () => void;
     closeCraftingTableModal: () => void;
+    exitToMainMenu: (saveFirst?: boolean) => void;
+    leaveAndCloseSession: () => void;
   } | null>(null);
 
   const plRef = useRef<PlayerState | null>(null);
@@ -505,6 +507,91 @@ export function App() {
         // haga clic en algún botón del menú principal (ej. "Un Jugador" o "Multijugador").
         let audioCtx: AudioContext | null = null;
         let audioUnlockedByMenuClick = false;
+        let rainSourceNode: AudioBufferSourceNode | null = null;
+        let rainGainNode: GainNode | null = null;
+        let isRainAmbientActive = false;
+
+        // Sonido ambiental constante de lluvia mediante AudioContext (solo cuando weatherState === 'rain' y tras interacción del usuario)
+        const syncRainAmbientAudio = () => {
+          const shouldPlayRain = audioUnlockedByMenuClick && weatherStateRef.current === 'rain';
+          if (container) {
+            container.dataset.rainAudio = shouldPlayRain ? 'active' : 'inactive';
+          }
+
+          if (!audioUnlockedByMenuClick) return;
+
+          try {
+            if (shouldPlayRain) {
+              if (!audioCtx) {
+                const Ctx =
+                  window.AudioContext ||
+                  (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+                if (Ctx) audioCtx = new Ctx();
+              }
+              if (!audioCtx) return;
+
+              if (audioCtx.state === 'suspended') {
+                audioCtx.resume().catch(() => {});
+              }
+
+              if (!rainSourceNode || !rainGainNode) {
+                const sampleRate = audioCtx.sampleRate || 44100;
+                const bufferLen = sampleRate * 2;
+                const noiseBuffer = audioCtx.createBuffer(1, bufferLen, sampleRate);
+                const output = noiseBuffer.getChannelData(0);
+                // Ruido rosa filtrado para simular lluvia constante realista
+                let b0 = 0,
+                  b1 = 0,
+                  b2 = 0,
+                  b3 = 0,
+                  b4 = 0,
+                  b5 = 0,
+                  b6 = 0;
+                for (let i = 0; i < bufferLen; i++) {
+                  const white = Math.random() * 2 - 1;
+                  b0 = 0.99886 * b0 + white * 0.0555179;
+                  b1 = 0.99332 * b1 + white * 0.0750759;
+                  b2 = 0.969 * b2 + white * 0.153852;
+                  b3 = 0.8665 * b3 + white * 0.3104856;
+                  b4 = 0.55 * b4 + white * 0.5329522;
+                  b5 = -0.7616 * b5 - white * 0.016898;
+                  output[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.045;
+                  b6 = white * 0.115926;
+                }
+
+                const src = audioCtx.createBufferSource();
+                src.buffer = noiseBuffer;
+                src.loop = true;
+
+                const filter = audioCtx.createBiquadFilter();
+                filter.type = 'bandpass';
+                filter.frequency.setValueAtTime(1050, audioCtx.currentTime);
+                filter.Q.setValueAtTime(0.75, audioCtx.currentTime);
+
+                const gain = audioCtx.createGain();
+                gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+
+                src.connect(filter);
+                filter.connect(gain);
+                gain.connect(audioCtx.destination);
+                src.start(0);
+
+                rainSourceNode = src;
+                rainGainNode = gain;
+              }
+
+              if (!isRainAmbientActive && rainGainNode) {
+                rainGainNode.gain.setTargetAtTime(0.22, audioCtx.currentTime, 0.2);
+                isRainAmbientActive = true;
+              }
+            } else if (isRainAmbientActive && rainGainNode && audioCtx) {
+              rainGainNode.gain.setTargetAtTime(0.0001, audioCtx.currentTime, 0.15);
+              isRainAmbientActive = false;
+            }
+          } catch {
+            // Ignorar restricciones de AudioContext
+          }
+        };
 
         const unlockAudioFromMenu = () => {
           audioUnlockedByMenuClick = true;
@@ -518,6 +605,7 @@ export function App() {
             if (audioCtx && audioCtx.state === 'suspended') {
               audioCtx.resume().catch(() => {});
             }
+            syncRainAmbientAudio();
           } catch {
             // Ignorar restricciones de reproducción automática del navegador
           }
@@ -1516,6 +1604,7 @@ export function App() {
       } else if (msg.type === 'weather:state') {
         weatherStateRef.current = msg.weather;
         setWeatherState(msg.weather);
+        syncRainAmbientAudio();
         broadcastNetMessage(msg, fromConn.peer);
       } else if (msg.type === 'mode:select') {
         activateGameModeInternal(msg.mode, msg.opponent, false);
@@ -1546,6 +1635,7 @@ export function App() {
         if (msg.weather) {
           weatherStateRef.current = msg.weather;
           setWeatherState(msg.weather);
+          syncRainAmbientAudio();
         }
         if (msg.gameMode) {
           gameModeRef.current = msg.gameMode;
@@ -2157,6 +2247,22 @@ export function App() {
           setIsChatOpen(false);
         }
         return;
+      }
+
+      if (e.code === 'Escape') {
+        if (inventoryOpenLocal || quickCraftOpenLocal || craftingTableOpenLocal) {
+          inventoryOpenLocal = false;
+          quickCraftOpenLocal = false;
+          craftingTableOpenLocal = false;
+          setIsInventoryOpen(false);
+          setIsQuickCraftOpen(false);
+          setIsCraftingTableOpen(false);
+          return;
+        }
+        if (isPlayingRef.current) {
+          actionsRef.current?.exitToMainMenu(true);
+          return;
+        }
       }
 
       // REQUISITO 2: Lógica de Muerte Estricta en "Luz Roja" al presionar WASD, Space o Flechas
@@ -3145,11 +3251,12 @@ export function App() {
         const next = order[(order.indexOf(weatherStateRef.current) + 1) % order.length];
         weatherStateRef.current = next;
         setWeatherState(next);
+        syncRainAmbientAudio();
         broadcastNetMessage({ type: 'weather:state', weather: next });
         if (next === 'rain') {
           const pud = spawnRainPuddleLogic(world, PL1.pos);
           if (pud.spawned) rebuildMeshes();
-          showMsg('🌧️ Clima: Lluvia intensa (Visibilidad reducida y formación de charcos).');
+          showMsg('🌧️ Clima: Lluvia intensa (Sonido ambiental de lluvia + formación de charcos).');
         } else if (next === 'snow') {
           showMsg('🌨️ Clima: Tormenta de Nieve.');
         } else {
@@ -3231,6 +3338,83 @@ export function App() {
         setIsCraftingTableOpen(false);
         if (!touchDetected) renderer.domElement.requestPointerLock?.();
       },
+      exitToMainMenu: (saveFirst = true) => {
+        ensureAudio();
+        if (saveFirst) {
+          try {
+            const json = serializeSaveGame(
+              world,
+              PL1,
+              camAnglesRef.current.yaw,
+              camAnglesRef.current.pitch
+            );
+            localStorage.setItem(SAVE_STORAGE_KEY, json);
+            saveToIndexedDB(SAVE_STORAGE_KEY, json);
+            setHasSavedGame(true);
+          } catch {
+            // Ignore storage errors
+          }
+        }
+        inventoryOpenLocal = false;
+        quickCraftOpenLocal = false;
+        craftingTableOpenLocal = false;
+        chatOpenLocal = false;
+        wolfModalOpenLocal = false;
+        setIsInventoryOpen(false);
+        setIsQuickCraftOpen(false);
+        setIsCraftingTableOpen(false);
+        setIsChatOpen(false);
+        setWolfModal({ open: false, wolfId: null });
+        if (document.pointerLockElement) {
+          document.exitPointerLock();
+        }
+        isPlayingRef.current = false;
+        setIsPlaying(false);
+        setMenuView('main');
+        syncRainAmbientAudio();
+        showMsg('🚪 Has vuelto al Menú Principal (Partida guardada).');
+      },
+      leaveAndCloseSession: () => {
+        try {
+          const json = serializeSaveGame(
+            world,
+            PL1,
+            camAnglesRef.current.yaw,
+            camAnglesRef.current.pitch
+          );
+          localStorage.setItem(SAVE_STORAGE_KEY, json);
+          saveToIndexedDB(SAVE_STORAGE_KEY, json);
+          setHasSavedGame(true);
+        } catch {
+          // Ignore storage errors
+        }
+        if (peerInstance) {
+          peerInstance.destroy();
+          peerInstance = null;
+        }
+        connections.clear();
+        for (const rp of remotePlayers.values()) {
+          scene.remove(rp.group);
+        }
+        remotePlayers.clear();
+        setRoomCode('');
+        setPeerCount(1);
+        setMpStatus('offline');
+        challengeStateRef.current = 'off';
+        setChallengeState('off');
+        weatherStateRef.current = 'clear';
+        setWeatherState('clear');
+        syncRainAmbientAudio();
+        if (document.pointerLockElement) {
+          document.exitPointerLock();
+        }
+        isPlayingRef.current = false;
+        setIsPlaying(false);
+        setHasStartedOnce(false);
+        setMenuView('main');
+        setPwaInstallBannerMsg('👋 Sesión cerrada y partida guardada correctamente.');
+        setTimeout(() => setPwaInstallBannerMsg(null), 4000);
+      },
     };
 
     buildHotbar();
@@ -3268,11 +3452,13 @@ export function App() {
           if (nextW !== weatherStateRef.current) {
             weatherStateRef.current = nextW;
             setWeatherState(nextW);
+            syncRainAmbientAudio();
             broadcastNetMessage({ type: 'weather:state', weather: nextW });
           }
         }
       }
 
+      syncRainAmbientAudio();
       const curWeather = weatherStateRef.current;
       const dayF = Math.max(0, Math.min(1, (sy + 0.2) / 0.6));
       const skyCol = new THREE.Color().lerpColors(
@@ -4005,6 +4191,16 @@ export function App() {
       window.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('resize', onResize);
       renderer.domElement.removeEventListener('mousedown', onMouseDown);
+      try {
+        rainSourceNode?.stop();
+        rainSourceNode?.disconnect();
+        rainGainNode?.disconnect();
+        if (audioCtx && audioCtx.state !== 'closed') {
+          audioCtx.close().catch(() => {});
+        }
+      } catch {
+        // Ignore audio cleanup errors
+      }
       if (composer) (composer as EffectComposer).dispose();
       renderer.dispose();
     };
@@ -4587,6 +4783,15 @@ export function App() {
             className="px-2 py-0.5 rounded-md bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/40 text-[11px] text-emerald-200 font-semibold cursor-pointer"
           >
             💾 Guardar
+          </button>
+
+          <button
+            id="btnHudExitGame"
+            type="button"
+            onClick={() => actionsRef.current?.exitToMainMenu(true)}
+            className="px-2 py-0.5 rounded-md bg-rose-500/25 hover:bg-rose-500/45 border border-rose-400/50 text-[11px] text-rose-200 font-bold cursor-pointer"
+          >
+            🚪 Salir
           </button>
         </div>
       </div>
@@ -5383,6 +5588,21 @@ export function App() {
                     </button>
                   </div>
                 )}
+
+                <button
+                  id="btnExitGameMainMenu"
+                  type="button"
+                  onClick={() => actionsRef.current?.leaveAndCloseSession()}
+                  className="
+                    w-full py-2.5 px-6 mt-1
+                    bg-[#3b1d24] hover:bg-[#52242f] active:bg-[#2a1218]
+                    border-2 border-t-[#8c4656] border-l-[#8c4656] border-r-[#1f0d11] border-b-[#1f0d11]
+                    text-rose-200 font-mono font-bold text-sm tracking-wide
+                    shadow-[0_4px_0_#14080b] cursor-pointer transition
+                  "
+                >
+                  🚪 Salir del Juego (Guardar y Cerrar Sesión)
+                </button>
               </div>
             ) : (
               /* REQUISITO 2: Submenú Limpio de Multijugador (PeerJS) y Selección de los 3 Modos */
